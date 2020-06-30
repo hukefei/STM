@@ -97,7 +97,6 @@ class Encoder_Q(nn.Module):
 
     def forward(self, in_f):
         f = (in_f - self.mean) / self.std
-
         x = self.conv1(f) 
         x = self.bn1(x)
         c1 = self.relu(x)   # 1/2, 64

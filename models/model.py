@@ -83,7 +83,7 @@ class Encoder_M(nn.Module):
         o = torch.zeros_like(in_m).float()
         # in_m.shape [1,1,480,864],[b,c,,h,w]
         in_m = self.conv1_m(in_m)
-        x = self.conv1(f) + in_m #+ self.conv1_o(o)
+        x = self.conv1(f) + in_m  # + self.conv1_o(o)
         x = self.bn1(x)
         c1 = self.relu(x)  # 1/2, 64
         x = self.maxpool(c1)  # 1/4, 64
@@ -189,15 +189,15 @@ class Memory(nn.Module):
         _, C_value, _, _, _ = values_m.size()
 
         keys_m_temp = keys_m.view(B, C_key, T * H * W)
-        keys_m_temp = torch.transpose(keys_m_temp, 1, 2)#[b,thw,c]
+        keys_m_temp = torch.transpose(keys_m_temp, 1, 2)  # [b,thw,c]
 
-        key_q_temp = key_q.view(B, C_key, H * W) # [b,c,hw]
+        key_q_temp = key_q.view(B, C_key, H * W)  # [b,c,hw]
 
         p = torch.bmm(keys_m_temp, key_q_temp)  # [b, thw, hw]
         p = p / math.sqrt(C_key)
         p = F.softmax(p, dim=1)  # b, thw, hw
 
-        mo = values_m.view(B, C_value, T * H * W)#[b,c,thw]
+        mo = values_m.view(B, C_value, T * H * W)  # [b,c,thw]
         mem = torch.bmm(mo, p)  # Weighted-sum B, c, hw
         mem = mem.view(B, C_value, H, W)
 
@@ -227,26 +227,23 @@ class STM(nn.Module):
         :param value: 当前memory的value; [B,C,T,H,W]
         :return: logits []
         '''
-        #encode
+        # encode
         r4, r3, r2, _, _, x = self.Encoder_Q(frame)
         curKey, curValue = self.KV_Q_r4(r4)  # 1, dim, H/16, W/16
 
         # memory select
         final_value = self.Memory(key, value, curKey, curValue)
-        logits = self.Decoder(final_value, r3, r2) #[b,2,h,w]
+        logits = self.Decoder(final_value, r3, r2)  # [b,2,h,w]
         ps = F.softmax(logits, dim=1)[:, 1]  # B h w
         B, H, W = ps.shape
         ps_tmp = torch.unsqueeze(ps, dim=1)  # B,1,H,W
         em = torch.zeros(B, 2, H, W).cuda()
-        em[:, 0] = torch.prod(1-ps_tmp, dim=1)
+        em[:, 0] = torch.prod(1 - ps_tmp, dim=1)
         em[:, 1] = ps
-        em = torch.clamp(em, 1e-7, 1- 1e-7)
-        logit = torch.log((em / (1-em)))
-
-
+        em = torch.clamp(em, 1e-7, 1 - 1e-7)
+        logit = torch.log((em / (1 - em)))
 
         return logit
-
 
     def memorize(self, curFrame, curMask):
         '''
@@ -257,7 +254,6 @@ class STM(nn.Module):
         '''
         # print('&&&&&&&&&', curMask.shape, curFrame.shape)
         r4, _, _, _, _, x = self.Encoder_M(curFrame, curMask)
-
 
         # r4 = r4.detach().cpu().numpy()
         # print('r4.shape', r4.shape)
@@ -281,12 +277,10 @@ class STM(nn.Module):
         k4, v4 = self.KV_M_r4(r4)  # num_objects, 128 and 512, H/16, W/16
         return k4, v4
 
-
     def forward(self, args):
-        #args: Fs[:,:,t-1]
-        #kwargs: Es[:,:,t-1]
-        if len(args) > 2: # keys
+        # args: Fs[:,:,t-1]
+        # kwargs: Es[:,:,t-1]
+        if len(args) > 2:  # keys
             return self.segment(args[0], args[1], args[2])
         else:
             return self.memorize(args[0], args[1])
-

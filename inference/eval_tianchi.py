@@ -98,7 +98,7 @@ def Run_video(Fs, Ms, num_frames, num_objects, Mem_every=None, Mem_number=None):
 
 
 
-Testset = test_dataset = TIANCHI(DATA_ROOT, imset='test.txt', single_object=False)
+Testset = TIANCHI(DATA_ROOT, imset='test.txt', single_object=False)
 Testloader = data.DataLoader(Testset, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
 
 model = nn.DataParallel(STM())

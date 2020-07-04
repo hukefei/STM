@@ -277,7 +277,7 @@ class DAVIS(data.Dataset):
             iaa.Sometimes(0.5,
                           iaa.GaussianBlur(sigma=(0, 0.01))
                           ),
-            iaa.contrast.LinearContrast((0.75, 1.5)),
+            # iaa.contrast.LinearContrast((0.75, 1.5)),
             iaa.AdditiveGaussianNoise(loc=0, scale=(0.0, 0.05 * 255), per_channel=0.5),
             iaa.Multiply((0.8, 1.2), per_channel=0.2),
         ], random_order=False)

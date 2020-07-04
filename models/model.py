@@ -156,9 +156,11 @@ class Decoder(nn.Module):
         m2 = self.RF2(r2, m3)  # out: 1/4, 256
 
         p2 = self.pred2(F.relu(m2))
+        p3 = self.pred2(F.relu(m3))
+        p4 = self.pred2(F.relu(m4))
 
         p = F.interpolate(p2, scale_factor=4, mode='bilinear', align_corners=True)
-        return p  # , p2, p3, p4
+        return p, p3, p4  # , p2, p3, p4
 
 
 class KeyValue(nn.Module):
@@ -233,7 +235,15 @@ class STM(nn.Module):
 
         # memory select
         final_value = self.Memory(key, value, curKey, curValue)
-        logits = self.Decoder(final_value, r3, r2)  # [b,2,h,w]
+        logits, p_m2, p_m3 = self.Decoder(final_value, r3, r2)  # [b,2,h,w]
+        logit = self.get_logit(logits)
+        p_m2 = self.get_logit(p_m2)
+        p_m3 = self.get_logit(p_m3)
+
+        return logit, p_m2, p_m3
+
+    @staticmethod
+    def get_logit(logits):
         ps = F.softmax(logits, dim=1)[:, 1]  # B h w
         B, H, W = ps.shape
         ps_tmp = torch.unsqueeze(ps, dim=1)  # B,1,H,W
@@ -242,7 +252,6 @@ class STM(nn.Module):
         em[:, 1] = ps
         em = torch.clamp(em, 1e-7, 1 - 1e-7)
         logit = torch.log((em / (1 - em)))
-
         return logit
 
     def memorize(self, curFrame, curMask):

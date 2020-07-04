@@ -1,23 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="iterdet">
+  <component name="PublishConfigData" autoUpload="Always" serverName="root@172.27.9.82:10022 password">
     <serverData>
-      <paths name="iterdet">
+      <paths name="root@172.27.9.82:10022 password">
         <serverdata>
           <mappings>
-            <mapping deploy="/tianchi/STM" local="$PROJECT_DIR$" web="/" />
-            <mapping local="" />
+            <mapping deploy="/workspace/tianchi/STM" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
-      <paths name="mmdet">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="solov2">
+      <paths name="root@172.27.9.82:8022 password">
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />

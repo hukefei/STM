@@ -37,9 +37,9 @@ def parse_args():
     parser.add_argument('--train_with_val', default=True, type=bool, help='whether to val before train')
     parser.add_argument('--resume_from', default='', help='the checkpoint file to resume from')
     parser.add_argument('--train_data', type=str, default='davis')
-    parser.add_argument('--lr', type=float, default=1e-6)
+    parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--clip_size', type=int, default=3)
-    parser.add_argument('--batch_size', type=int, default=1)
+    parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--epoch', type=int, default=500)
     parser.add_argument("--davis", type=str, default='/workspace/tianchi/DAVIS-2017-trainval-480p/DAVIS')
     parser.add_argument("--youtube", type=str, default='/workspace/tianchi/youtube_complete/')
@@ -131,22 +131,22 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
     else:
         raise NotImplementedError
 
-    Es = torch.zeros_like(Ms).float().cuda()#[1,1,50,480,864][b,c,t,h,w]
+    Es = torch.zeros_like(Ms).float().cuda()  # [1,1,50,480,864][b,c,t,h,w]
     Es[:, :, 0] = Ms[:, :, 0]
 
     loss_video = torch.tensor(0.0).cuda()
 
     # initialize the size of pre_value and pre_key
     key, value = model([Fs[:, :, 0], Ms[:, :, 0].float()])
-    [b,c,h,w] = key.shape
-    pre_key = torch.zeros([b,c,1,h,w])
-    pre_value = torch.zeros([b,c*4,1,h,w])
+    [b, c, h, w] = key.shape
+    pre_key = torch.zeros([b, c, 1, h, w])
+    pre_value = torch.zeros([b, c * 4, 1, h, w])
 
     for t in tqdm.tqdm(range(1, num_frames)):
         # memorize
         preFs = (Fs[:, :, t - 1]).cuda()
         preEs = (Es[:, :, t - 1]).float().cuda()
-        pre_key[:,:,0], pre_value[:,:,0]= model([preFs, preEs])
+        pre_key[:, :, 0], pre_value[:, :, 0] = model([preFs, preEs])
 
         if t - 1 == 0:  # the first frame
             this_keys_m, this_values_m = pre_key, pre_value
@@ -154,14 +154,13 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
             this_keys_m = torch.cat([keys, pre_key], dim=2)
             this_values_m = torch.cat([values, pre_value], dim=2)
 
-
         # segment
-        logits, p_m2, p_m3 = model([Fs[:, :, t], this_keys_m, this_values_m]) # B 2 h w
-        em = F.softmax(logits, dim=1)[:, 1] # B h w
-        Es[:,0,t] = em
+        logits, p_m2, p_m3 = model([Fs[:, :, t], this_keys_m, this_values_m])  # B 2 h w
+        em = F.softmax(logits, dim=1)[:, 1]  # B h w
+        Es[:, 0, t] = em
 
         #  calculate loss on cuda
-        Ms_cuda = Ms[:,0,t].cuda()
+        Ms_cuda = Ms[:, 0, t].cuda()
         loss_video += (_loss(logits, Ms_cuda)
                        + 0.5 * _loss(F.interpolate(p_m2, scale_factor=8, mode='bilinear', align_corners=True), Ms_cuda)
                        + 0.5 * _loss(F.interpolate(p_m3, scale_factor=16, mode='bilinear', align_corners=True),
@@ -171,16 +170,16 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
         if t - 1 in to_memorize:
             keys, values = this_keys_m, this_values_m
 
-    if args.save_masks and args.mode=='val':
-        #save mask
+    if args.save_masks and args.mode == 'val':
+        # save mask
         save_img_path = os.path.join(args.work_dir, 'masks', name[0])
         if not os.path.exists(save_img_path):
             os.makedirs(save_img_path)
-        for i in range(len(Es[0,0])):
-            img_np = Es[0,0,i].detach().cpu().numpy()
-            img_np = (np.round(img_np*255)).astype(np.uint8)
+        for i in range(len(Es[0, 0])):
+            img_np = Es[0, 0, i].detach().cpu().numpy()
+            img_np = (np.round(img_np * 255)).astype(np.uint8)
             img = Image.fromarray(img_np).convert('L')
-            img.save(save_img_path+'/'+'{:05d}.png'.format(i))
+            img.save(save_img_path + '/' + '{:05d}.png'.format(i))
 
     #  calculate mIOU on cuda
     pred = torch.round(Es.float().cuda())
@@ -189,8 +188,7 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
         video_mIoU = video_mIoU + get_video_mIoU(pred[n], Ms[n].cuda())  # mIOU of video(t frames) for each batch
     video_mIoU = video_mIoU / len(Ms)  # mean IoU among batch
 
-
-    return loss_video/num_frames, video_mIoU
+    return loss_video / num_frames, video_mIoU
 
 
 def validate(args, val_loader, model):
@@ -313,7 +311,7 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
         model.train()  # turn-on BN
 
         for seq, batch in enumerate(train_loader):
-            Fs, Ms, num_objects, info = batch['Fs'], batch['Ms'], batch['num_objects'], batch['info']
+            Fs, Ms, info = batch['Fs'], batch['Ms'], batch['info']
             num_frames = info['num_frames'][0].item()
             name = info['name']
             loss_video, video_mIou = Run_video(args, Fs, Ms, num_frames, name, Mem_every=1, Mem_number=None)
@@ -417,10 +415,11 @@ if __name__ == '__main__':
                                      separate_instance=False,
                                      only_single=False, target_size=(864, 480), clip_size=clip_size)
         elif args.train_data == 'davis':
-            train_dataset = DAVIS(DAVIS_ROOT, phase='train', imset='train.txt', resolution='480p',
-                                  separate_instance=True,
-                                  only_single=False, target_size=(864, 480), clip_size=clip_size)
-        train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True)
+            train_dataset = DAVIS3(DAVIS_ROOT, phase='train', imset='train.txt', resolution='480p',
+                                   separate_instance=True,
+                                   only_single=False, target_size=(864, 480), clip_size=clip_size)
+        train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
+                                       pin_memory=True)
 
         epoch_start = 0
         lr = args.lr

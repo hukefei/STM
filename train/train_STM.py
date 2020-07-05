@@ -13,13 +13,16 @@ import argparse
 from tensorboardX import SummaryWriter
 import matplotlib.pyplot as plt
 import csv
+import warnings
+
+warnings.filterwarnings('ignore')
 
 ### My libs
 from dataloader.dataset_rgmp_v1 import DAVIS
 from dataloader.train_stm_stage1 import YOUTUBE
 from dataloader.train_gcm_stage2 import YOUTUBE2
 from dataloader.train_stm_stage3 import DAVIS3
-from dataset import TIANCHI
+from dataloader.train_tianchi import TIANCHI
 from models.model import STM
 from models.loss.smooth_cross_entropy_loss import SmoothCrossEntropyLoss
 from models.loss.dice_loss import DiceLoss
@@ -41,7 +44,9 @@ def parse_args():
     parser.add_argument('--clip_size', type=int, default=3)
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--epoch', type=int, default=500)
-    parser.add_argument("--davis", type=str, default='/workspace/tianchi/DAVIS-2017-trainval-480p/DAVIS')
+    parser.add_argument('--save_interval', type=int, default=4)
+    parser.add_argument('--validate_interval', type=int, default=4)
+    parser.add_argument("--davis", type=str, default='/workspace/tianchi/tianchiyusai')
     parser.add_argument("--youtube", type=str, default='/workspace/tianchi/youtube_complete/')
     parser.add_argument("--gpu", type=str, default='0', help="0; 0,1; 0,3; etc")
     parser.add_argument("--year", type=int, default=0, help="validate year; 2016,2017,0")
@@ -122,7 +127,7 @@ def get_video_mIoU(predn, all_Mn):  # [c,t,h,w]
 #     return loss_video/num_frames, video_mIoU, pred
 
 def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
-    print('name:', name)
+    # print('name:', name)
     # initialize storage tensors
     if Mem_every:
         to_memorize = [int(i) for i in np.arange(0, num_frames, step=Mem_every)]
@@ -142,7 +147,7 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
     pre_key = torch.zeros([b, c, 1, h, w])
     pre_value = torch.zeros([b, c * 4, 1, h, w])
 
-    for t in tqdm.tqdm(range(1, num_frames)):
+    for t in range(1, num_frames):
         # memorize
         preFs = (Fs[:, :, t - 1]).cuda()
         preEs = (Es[:, :, t - 1]).float().cuda()
@@ -213,10 +218,10 @@ def validate(args, val_loader, model):
         # error_nums = 0
         with torch.no_grad():
             name = info['name']
-            loss_video, video_mIou = Run_video(Fs, Ms, num_frames, name, Mem_every=5, Mem_number=None)
+            loss_video, video_mIou = Run_video(args, Fs, Ms, num_frames, name, Mem_every=5, Mem_number=None)
             loss_all_videos += loss_video
             miou_all_videos += video_mIou
-            print('loss_video:', loss_video, 'video_mIou:', video_mIou)
+            # print('val_complete', seq/len(val_loader), 'name', name, 'loss_video:', loss_video, 'video_mIou:', video_mIou)
 
             if args.vis_val and args.mode == 'val':
                 videos_name.append(name[0])
@@ -271,12 +276,23 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
     # optimizer = torch.optim.SGD(model.parameters(), lr, momentum=0.9, weight_decay=1e-4)
 
     epochs = args.epoch
+    progressbar = tqdm.tqdm(range(epoch_start, epochs))
 
-    for epoch in range(epoch_start, epochs):
+    for epoch in progressbar:
+        interval = ((epoch + 1) / args.epoch) * 25
+        interval = max(interval, 1)
+        train_dataset = TIANCHI(DAVIS_ROOT, phase='train', imset='tianchi_train.txt', resolution='480p',
+                                separate_instance=True, only_single=False, target_size=(864, 480),
+                                clip_size=clip_size, interval=interval)
+        train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
+                                       pin_memory=True)
 
-        if args.train_with_val:
+        if args.train_with_val and epoch % args.validate_interval == 0:
             # validate
-            pass
+            loss_val, miou_val = validate(args, val_loader, model)
+            writer.add_scalar('val/Loss', loss_val.detach().cpu().numpy(), epoch)
+            writer.add_scalar('val/miou', miou_val, epoch)
+            print('val loss:{}, val miou:{}'.format(loss_val, miou_val))
             # if args.year==2016:
             #     loss_val_2016, miou_val_2016 = validate(args, val_loader_2016, model)
             #     # write loss and mIOU into tensorboard
@@ -297,7 +313,36 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
             #     writer.add_scalar('val_2017/miou', miou_val_2017, epoch)
             #     args.year = 0
 
-            # save checkpoints
+        model.train()  # turn-on BN
+        video_parts = len(train_loader)
+        for seq, batch in enumerate(train_loader):
+            Fs, Ms, info = batch['Fs'], batch['Ms'], batch['info']
+            num_frames = info['num_frames'][0].item()
+            name = info['name']
+            interval = info['interval']
+            loss_video, video_mIou = Run_video(args, Fs, Ms, num_frames, name, Mem_every=1, Mem_number=None)
+
+            # backward
+            optimizer.zero_grad()
+            loss_video.backward()
+            optimizer.step()
+
+            progressbar.set_description(
+                'loss_video:{:.2f}, video_mIou:{:.2f}, complete:{:.2f}, interval:{}, lr:{}'.format(
+                    loss_video.cpu().detach().numpy(),
+                    video_mIou,
+                    seq / video_parts,
+                    interval,
+                    lr))
+
+            # write into tensorboardX
+            y1 = loss_video.detach().cpu().numpy()
+            writer.add_scalar('train/loss', y1, epoch * len(train_loader) + seq)
+            writer.add_scalar('train/miou', video_mIou, epoch * len(train_loader) + seq)
+
+        # save checkpoints
+        if (epoch+1) % args.save_interval == 0:
+            print('saving checkpoints...')
             ckpt_dir = os.path.join(args.work_dir, "ckpt", args.train_data)
             if not os.path.exists(ckpt_dir):
                 os.makedirs(ckpt_dir)
@@ -307,27 +352,6 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
                 'state_dict': state_dict,
                 'lr': args.lr,
             }, os.path.join(ckpt_dir, 'ckpt_%04d.pth' % epoch, ))
-
-        model.train()  # turn-on BN
-
-        for seq, batch in enumerate(train_loader):
-            Fs, Ms, info = batch['Fs'], batch['Ms'], batch['info']
-            num_frames = info['num_frames'][0].item()
-            name = info['name']
-            loss_video, video_mIou = Run_video(args, Fs, Ms, num_frames, name, Mem_every=1, Mem_number=None)
-            print('loss_video:', loss_video)
-
-            # backward
-            optimizer.zero_grad()
-            loss_video.backward()
-            optimizer.step()
-
-            print('loss_video:', loss_video, 'video_mIou:', video_mIou)
-
-            # write into tensorboardX
-            y1 = loss_video.detach().cpu().numpy()
-            writer.add_scalar('train/loss', y1, epoch * len(train_loader) + seq)
-            writer.add_scalar('train/miou', video_mIou, epoch * len(train_loader) + seq)
 
 
 if __name__ == '__main__':
@@ -342,7 +366,11 @@ if __name__ == '__main__':
 
     # prepare val data
     DAVIS_ROOT = args.davis
-    palette = Image.open(DAVIS_ROOT + '/Annotations/blackswan/00000.png').getpalette()
+    palette = Image.open(DAVIS_ROOT + '/Annotations/606332/00000.png').getpalette()
+
+    val_dataset = DAVIS(DAVIS_ROOT, phase='val', imset='tianchi_val.txt', resolution='480p',
+                        separate_instance=False, only_single=False, target_size=(864, 480))
+    val_loader = data.DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=2, pin_memory=True)
 
     # if args.year == 2016:
     #     val_dataset_2016 = DAVIS(DAVIS_ROOT, phase='val', imset='2016/val.txt', resolution='480p',
@@ -415,9 +443,9 @@ if __name__ == '__main__':
                                      separate_instance=False,
                                      only_single=False, target_size=(864, 480), clip_size=clip_size)
         elif args.train_data == 'davis':
-            train_dataset = DAVIS3(DAVIS_ROOT, phase='train', imset='train.txt', resolution='480p',
-                                   separate_instance=True,
-                                   only_single=False, target_size=(864, 480), clip_size=clip_size)
+            train_dataset = TIANCHI(DAVIS_ROOT, phase='train', imset='tianchi_train.txt', resolution='480p',
+                                    separate_instance=True, only_single=False, target_size=(864, 480),
+                                    clip_size=clip_size)
         train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
                                        pin_memory=True)
 

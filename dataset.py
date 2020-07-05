@@ -95,7 +95,7 @@ class TIANCHI(data.Dataset):
     Dataset for DAVIS
     '''
 
-    def __init__(self, root, imset='2017/train.txt', phase='test', single_object=False, target_size=(864, 480)):
+    def __init__(self, root, imset='2017/train.txt', single_object=False, target_size=(864, 480)):
         self.root = root
         self.mask_dir = os.path.join(root, 'Annotations')
         self.image_dir = os.path.join(root, 'JPEGImages')
@@ -116,22 +116,22 @@ class TIANCHI(data.Dataset):
                 self.num_objects[_video] = np.max(_mask)
                 self.shape[_video] = np.shape(_mask)
 
-        self.K = 11
+        self.K = 8
         self.single_object = single_object
 
     def __len__(self):
         return len(self.videos)
 
-    def To_onehot(self, mask, num_objects):
-        M = np.zeros((num_objects+1, mask.shape[0], mask.shape[1]), dtype=np.uint8)
-        for k in range(num_objects+1):
+    def To_onehot(self, mask):
+        M = np.zeros((self.K+1, mask.shape[0], mask.shape[1]), dtype=np.uint8)
+        for k in range(self.K+1):
             M[k] = (mask == k).astype(np.uint8)
         return M
 
-    def All_to_onehot(self, masks, num_objects):
-        Ms = np.zeros((num_objects+1, masks.shape[0], masks.shape[1], masks.shape[2]), dtype=np.uint8)
+    def All_to_onehot(self, masks):
+        Ms = np.zeros((self.K+1, masks.shape[0], masks.shape[1], masks.shape[2]), dtype=np.uint8)
         for n in range(masks.shape[0]):
-            Ms[:, n] = self.To_onehot(masks[n], num_objects)
+            Ms[:, n] = self.To_onehot(masks[n])
         return Ms
 
     def __getitem__(self, index):
@@ -145,22 +145,23 @@ class TIANCHI(data.Dataset):
         N_masks = np.empty((self.num_frames[video],) + self.shape[video], dtype=np.uint8)
         for f in range(self.num_frames[video]):
             img_file = os.path.join(self.image_dir, video, '{:05d}.jpg'.format(f))
+            original_frame = np.array(Image.open(img_file).convert('RGB'))
+            info['ori_shape'] = original_frame.shape[:2]
             N_frames[f] = np.array(Image.open(img_file).convert('RGB').resize(self.target_size)) / 255.
             try:
                 mask_file = os.path.join(self.mask_dir, video, '{:05d}.png'.format(f))
                 N_masks[f] = np.array(Image.open(mask_file).convert('P').resize(self.target_size), dtype=np.uint8)
             except:
-                # print('a')
                 N_masks[f] = 255
 
         Fs = torch.from_numpy(np.transpose(N_frames.copy(), (3, 0, 1, 2)).copy()).float()
         if self.single_object:
             N_masks = (N_masks > 0.5).astype(np.uint8) * (N_masks < 255).astype(np.uint8)
-            Ms = torch.from_numpy(self.All_to_onehot(N_masks, num_objects).copy()).float()
+            Ms = torch.from_numpy(self.All_to_onehot(N_masks).copy()).float()
             num_objects = torch.LongTensor([int(1)])
             return Fs, Ms, num_objects, info
         else:
-            Ms = torch.from_numpy(self.All_to_onehot(N_masks, num_objects).copy()).float()
+            Ms = torch.from_numpy(self.All_to_onehot(N_masks).copy()).float()
             num_objects = torch.LongTensor([int(num_objects)])
             return Fs, Ms, num_objects, info
 

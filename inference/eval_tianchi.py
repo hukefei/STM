@@ -20,7 +20,7 @@ import tqdm
 import os
 import argparse
 import copy
-
+import datetime
 
 ### My libs
 from dataset import TIANCHI
@@ -107,26 +107,34 @@ if torch.cuda.is_available():
 model.eval() # turn-off BN
 
 print('Loading weights:', MODEL_PATH)
-model.load_state_dict(torch.load(MODEL_PATH))
+model_ = torch.load(MODEL_PATH)
+if 'state_dict' in model_.keys():
+    state_dict = model_['state_dict']
+else:
+    state_dict = model_
+model.load_state_dict(state_dict)
 
 code_name = 'tianchi'
+date = datetime.datetime.strftime(datetime.datetime.now(), '%y%m%d%H%M')
 print('Start Testing:', code_name)
 
 
 for seq, V in enumerate(Testloader):
     Fs, Ms, num_objects, info = V
     seq_name = info['name'][0]
+    ori_shape = info['ori_shape']
     num_frames = info['num_frames'][0].item()
     print('[{}]: num_frames: {}, num_objects: {}'.format(seq_name, num_frames, num_objects[0][0]))
     
     pred, Es = Run_video(Fs, Ms, num_frames, num_objects, Mem_every=5, Mem_number=None)
         
     # Save results for quantitative eval ######################
-    test_path = os.path.join('./test', code_name, seq_name)
+    test_path = os.path.join('./test', date, code_name, seq_name)
     if not os.path.exists(test_path):
         os.makedirs(test_path)
     for f in range(num_frames):
         img_E = Image.fromarray(pred[f])
+        img_E = img_E.resize(ori_shape[::-1])
         img_E.putpalette(palette)
         img_E.save(os.path.join(test_path, '{:05d}.png'.format(f)))
 

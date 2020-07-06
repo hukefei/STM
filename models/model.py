@@ -135,7 +135,7 @@ class Refine(nn.Module):
 
     def forward(self, f, pm):
         s = self.ResFS(self.convFS(f))
-        m = s + F.interpolate(pm, scale_factor=self.scale_factor, mode='bilinear', align_corners=True)
+        m = s + F.interpolate(pm, scale_factor=self.scale_factor, mode='bilinear', align_corners=False)
         m = self.ResMM(m)
         return m
 
@@ -159,7 +159,7 @@ class Decoder(nn.Module):
         p3 = self.pred2(F.relu(m3))
         p4 = self.pred2(F.relu(m4))
 
-        p = F.interpolate(p2, scale_factor=4, mode='bilinear', align_corners=True)
+        p = F.interpolate(p2, scale_factor=4, mode='bilinear', align_corners=False)
         return p, p3, p4  # , p2, p3, p4
 
 
@@ -225,7 +225,7 @@ class STM(nn.Module):
     def segment(self, frame, key, value):
         '''
         :param frame: 当前需要分割的image；[B,C,H,W]
-        :param key: 当前memory的key；[B,C,,T,H,W]
+        :param key: 当前memory的key；[B,C,T,H,W]
         :param value: 当前memory的value; [B,C,T,H,W]
         :return: logits []
         '''
@@ -236,11 +236,11 @@ class STM(nn.Module):
         # memory select
         final_value = self.Memory(key, value, curKey, curValue)
         logits, p_m2, p_m3 = self.Decoder(final_value, r3, r2)  # [b,2,h,w]
-        logit = self.get_logit(logits)
+        logits = self.get_logit(logits)
         p_m2 = self.get_logit(p_m2)
         p_m3 = self.get_logit(p_m3)
 
-        return logit, p_m2, p_m3
+        return logits, p_m2, p_m3
 
     @staticmethod
     def get_logit(logits):

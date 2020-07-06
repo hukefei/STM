@@ -76,7 +76,6 @@ class TIANCHI(data.Dataset):
         self.root = root
         self.clip_size = clip_size
         self.target_size = target_size
-        self.call_count = 0
         self.interval = interval
         self.SI = separate_instance  # 一个instance算一个视频
         if self.SI:
@@ -120,7 +119,7 @@ class TIANCHI(data.Dataset):
                         if i != 0:
                             self.videos.append(_video + '_{}'.format(i))
                             self.num_frames[_video + '_{}'.format(i)] = len(
-                                glob.glob(os.path.join(self.image_dir, _video, '*.jpg')))
+                                glob.glob(os.path.join(self.image_dir, _video, '*.jpg'))) + len(glob.glob(os.path.join(self.image_dir, _video, '*.png')))
                             self.mask_list[_video + '_{}'.format(i)] = temp_mask
                             self.frame_list[_video + '_{}'.format(i)] = temp_img
                             # self.num_objects[_video + '_{}'.format(i)] = 1
@@ -129,7 +128,7 @@ class TIANCHI(data.Dataset):
                     if self.OS and np.max(_mask) > 1.1:
                         continue
                     self.videos.append(_video)
-                    self.num_frames[_video] = len(glob.glob(os.path.join(self.image_dir, _video, '*.jpg')))
+                    self.num_frames[_video] = len(glob.glob(os.path.join(self.image_dir, _video, '*.jpg'))) + len(glob.glob(os.path.join(self.image_dir, _video, '*.png')))
                     self.mask_list[_video] = temp_mask
                     self.frame_list[_video] = temp_img
                     # self.num_objects[_video] = np.max(_mask)
@@ -140,7 +139,6 @@ class TIANCHI(data.Dataset):
 
     def __getitem__(self, index):
         # print(self.videos[index])
-        self.call_count += 1
         video = self.videos[index]
         frames = self.num_frames[video]
         if self.SI:
@@ -182,12 +180,11 @@ class TIANCHI(data.Dataset):
         #             frame_first = random.randint(0, 5)
         #             frame_second = random.randint(6, 12)
         #             frame_third = random.randint(13, 19)
-
         p1 = int(1/3 * frames)
         p2 = int(2/3 * frames)
-        frame_1 = random.randint(0, p1)
-        frame_2 = random.randint(p1+1, p2)
-        frame_3 = random.randint(p2+1, frames-1)
+        frame_1 = random.randint(0, p1-1)
+        frame_2 = random.randint(p1, p2-1)
+        frame_3 = random.randint(p2, frames-1)
         info['interval'] = [frame_2 - frame_1, frame_3 - frame_2]
 
         frames_num = [frame_1, frame_2, frame_3]

@@ -20,6 +20,7 @@ import logging  # 引入logging模块
 from logging import handlers
 import os.path
 import time
+import datetime
 
 ### My libs
 from dataloader.dataset_rgmp_v1 import DAVIS
@@ -41,7 +42,7 @@ def parse_args():
     parser.add_argument('--load_from', type=str,
                         default='/home/yuanlei/stm/exp/stm_reg800_v4.1/ckpt/youtube/ckpt_0036.pth')
     # train
-    parser.add_argument('--train_with_val', default=True, type=bool, help='whether to val before train')
+    parser.add_argument('--train_with_val', action='store_true', help='whether to val before train')
     parser.add_argument('--resume_from', default='', help='the checkpoint file to resume from')
     parser.add_argument('--train_data', type=str, default='davis')
     parser.add_argument('--lr', type=float, default=1e-5)
@@ -233,7 +234,6 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
     # optimizer = torch.optim.SGD(model.parameters(), lr, momentum=0.9, weight_decay=1e-4)
 
     epochs = args.epoch
-    # progressbar = tqdm.tqdm(range(epoch_start, epochs))
 
     for epoch in range(epoch_start, epochs):
         # interval = ((epoch + 1) / args.epoch) * 25
@@ -312,7 +312,7 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
         # save checkpoints
         if (epoch+1) % args.save_interval == 0:
             print('saving checkpoints...')
-            ckpt_dir = os.path.join(args.work_dir, "ckpt", args.train_data)
+            ckpt_dir = os.path.join(args.work_dir, "ckpt", DATETIME)
             if not os.path.exists(ckpt_dir):
                 os.makedirs(ckpt_dir)
             state_dict = model.state_dict()
@@ -320,7 +320,7 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
                 'epoch': epoch,
                 'state_dict': state_dict,
                 'lr': args.lr,
-            }, os.path.join(ckpt_dir, 'ckpt_%04d.pth' % epoch, ))
+            }, os.path.join(ckpt_dir, 'ckpt_{}e.pth'.format(epoch)))
 
 
 if __name__ == '__main__':
@@ -332,6 +332,8 @@ if __name__ == '__main__':
 
     GPU = args.gpu
     YEAR = args.year
+
+    DATETIME = datetime.datetime.strftime(datetime.datetime.now(), '%Y-%m%d-%H%M%S')
 
     class Logger(object):
         level_relations = {
@@ -355,12 +357,10 @@ if __name__ == '__main__':
             self.logger.addHandler(th)
 
 
-    log_path = os.path.join(args.work_dir, 'Logs')
-    print(log_path)
+    log_path = os.path.join(args.work_dir, 'ckpt', DATETIME)
     if not os.path.exists(log_path):
         os.makedirs(log_path)
-    rq = time.strftime('%Y%m%d%H%M', time.localtime(time.time()))
-    log = Logger(os.path.join(log_path, rq+'.log'))
+    log = Logger(os.path.join(log_path, DATETIME+'.log'))
     log.logger.info(args)
 
 
@@ -405,7 +405,8 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(args.load_from), strict=True)
 
     if args.mode == "val":
-        pass
+        loss_val, miou_val = validate(args, val_loader, model)
+        log.logger.info('val loss:{}, val miou:{}'.format(loss_val, miou_val))
     #     # run val
     #     with torch.no_grad():
     #         if args.year == 2016:

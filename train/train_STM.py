@@ -51,7 +51,7 @@ def parse_args():
     parser.add_argument('--epoch', type=int, default=100)
     parser.add_argument('--save_interval', type=int, default=4)
     parser.add_argument('--validate_interval', type=int, default=4)
-    parser.add_argument("--davis", type=str, default='/workspace/tianchi/dataset/tianchiyusai')
+    parser.add_argument("--davis", type=str, default='/data/sdv2/workspace/tianchi/dataset/tianchiyusai')
     parser.add_argument("--youtube", type=str, default='/workspace/tianchi/dataset/youtube_complete/')
     parser.add_argument("--gpu", type=str, default='0', help="0; 0,1; 0,3; etc")
     parser.add_argument("--year", type=int, default=0, help="validate year; 2016,2017,0")
@@ -160,10 +160,6 @@ def validate(args, val_loader, model):
     MODEL = 'STM'
     print(MODEL, ': Testing on DAVIS', args.year)
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = GPU
-    if torch.cuda.is_available():
-        print('using Cuda devices, num:', torch.cuda.device_count())
-
     loss_all_videos = 0.0
     miou_all_videos = 0.0
     videos_name = []
@@ -223,10 +219,6 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
     MODEL = 'STM'
     print(MODEL, 'Training on ', args.train_data)
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = GPU
-    if torch.cuda.is_available():
-        print('using Cuda devices, num:', torch.cuda.device_count())
-
     code_name = '{}_DAVIS_{}{}'.format(MODEL, args.train_data, YEAR)
     print('Start Training:', code_name)
 
@@ -244,7 +236,7 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
         # train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
         #                                pin_memory=True)
 
-        if args.train_with_val and epoch % args.validate_interval == 0:
+        if args.train_with_val and (epoch+1) % args.validate_interval == 0:
             # validate
             loss_val, miou_val = validate(args, val_loader, model)
             writer.add_scalar('val/Loss', loss_val.detach().cpu().numpy(), epoch)
@@ -333,6 +325,10 @@ if __name__ == '__main__':
     GPU = args.gpu
     YEAR = args.year
 
+    os.environ['CUDA_VISIBLE_DEVICES'] = GPU
+    if torch.cuda.is_available():
+        print('using Cuda devices, num:', torch.cuda.device_count())
+
     DATETIME = datetime.datetime.strftime(datetime.datetime.now(), '%Y-%m%d-%H%M%S')
 
     class Logger(object):
@@ -394,6 +390,7 @@ if __name__ == '__main__':
     #     val_loader_2017 = data.DataLoader(val_dataset_2017, batch_size=1, shuffle=False, num_workers=2, pin_memory=True)
 
     # build model
+    # device_list = [int(i) for i in GPU.split(',')]
     model = nn.DataParallel(STM())
 
     if torch.cuda.is_available():

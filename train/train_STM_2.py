@@ -94,25 +94,17 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
     Es = torch.zeros_like(Ms).float().cuda()  # [1,1,50,480,864][b,c,t,h,w]
     Es[:, :, 0] = Ms[:, :, 0]
 
+    # TODO: Ps b,2,t,h,w
     Ps = torch.zeros_like(Ms).float().cuda()  # [1,1,50,480,864][b,c,t,h,w]
     Ps[:, :, 0] = Ms[:, :, 0]
 
     loss_video = torch.tensor(0.0).cuda()
-
-    # initialize the size of pre_value and pre_key
-    # key, value = model([Fs[:, :, 0], Ms[:, :, 0].float()])
-    # [b, c, h, w] = key.shape
-    # pre_key = torch.zeros([b, c, 1, h, w])
-    # pre_value = torch.zeros([b, c * 4, 1, h, w])
 
     for t in range(1, num_frames):
         # memorize
         pre_key, pre_value = model([Fs[:, :, t - 1], Es[:, :, t - 1]], mode='m')
         pre_key = pre_key.unsqueeze(2)
         pre_value = pre_value.unsqueeze(2)
-        # preFs = (Fs[:, :, t - 1]).cuda()
-        # preEs = (Es[:, :, t - 1]).float().cuda()
-        # pre_key[:, :, 0], pre_value[:, :, 0] = model([preFs, preEs])
 
         if t - 1 == 0:  # the first frame
             this_keys_m, this_values_m = pre_key, pre_value
@@ -133,6 +125,7 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
                                       Ms_cuda))
 
         # refine
+        # TODO: modify refine
         r_pred = model([Ps[:, 0, t-1], logits], mode='r')
         Ps[:, 0, t] = r_pred
         loss_video += _loss(r_pred, Ms_cuda)

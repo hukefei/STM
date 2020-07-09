@@ -29,7 +29,7 @@ from dataloader.train_stm_stage1 import YOUTUBE
 from dataloader.train_gcm_stage2 import YOUTUBE2
 from dataloader.train_stm_stage3 import DAVIS3
 from dataloader.train_tianchi import TIANCHI
-from models.model import STM
+from models.model2 import STM
 from models.loss.smooth_cross_entropy_loss import SmoothCrossEntropyLoss
 from models.loss.dice_loss import DiceLoss
 
@@ -94,6 +94,9 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
     Es = torch.zeros_like(Ms).float().cuda()  # [1,1,50,480,864][b,c,t,h,w]
     Es[:, :, 0] = Ms[:, :, 0]
 
+    Ps = torch.zeros_like(Ms).float().cuda()  # [1,1,50,480,864][b,c,t,h,w]
+    Ps[:, :, 0] = Ms[:, :, 0]
+
     loss_video = torch.tensor(0.0).cuda()
 
     # initialize the size of pre_value and pre_key
@@ -104,7 +107,7 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
 
     for t in range(1, num_frames):
         # memorize
-        pre_key, pre_value = model([Fs[:, :, t - 1], Es[:, :, t - 1]])
+        pre_key, pre_value = model([Fs[:, :, t - 1], Es[:, :, t - 1]], mode='m')
         pre_key = pre_key.unsqueeze(2)
         pre_value = pre_value.unsqueeze(2)
         # preFs = (Fs[:, :, t - 1]).cuda()
@@ -118,7 +121,7 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
             this_values_m = torch.cat([values, pre_value], dim=2)
 
         # segment
-        logits, p_m2, p_m3 = model([Fs[:, :, t], this_keys_m, this_values_m])  # B 2 h w
+        logits, p_m2, p_m3 = model([Fs[:, :, t], this_keys_m, this_values_m], mode='s')  # B 2 h w
         em = F.softmax(logits, dim=1)[:, 1]  # B h w
         Es[:, 0, t] = em
 
@@ -128,6 +131,11 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
                        + 0.5 * _loss(F.interpolate(p_m2, scale_factor=8, mode='bilinear', align_corners=False), Ms_cuda)
                        + 0.25 * _loss(F.interpolate(p_m3, scale_factor=16, mode='bilinear', align_corners=False),
                                       Ms_cuda))
+
+        # refine
+        r_pred = model([Ps[:, 0, t-1], logits], mode='r')
+        Ps[:, 0, t] = r_pred
+        loss_video += _loss(r_pred, Ms_cuda)
 
 
         # update key and value
@@ -232,13 +240,6 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
     epochs = args.epoch
 
     for epoch in range(epoch_start, epochs):
-        # interval = ((epoch + 1) / args.epoch) * 25
-        # interval = max(interval, 1)
-        # train_dataset = TIANCHI(DAVIS_ROOT, phase='train', imset='tianchi_train.txt', resolution='480p',
-        #                         separate_instance=True, only_single=False, target_size=(864, 480),
-        #                         clip_size=clip_size, interval=interval)
-        # train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
-        #                                pin_memory=True)
 
         if args.train_with_val and (epoch + 1) % args.validate_interval == 0:
             # validate
@@ -246,25 +247,6 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
             writer.add_scalar('val/Loss', loss_val.detach().cpu().numpy(), epoch)
             writer.add_scalar('val/miou', miou_val, epoch)
             log.logger.info('val loss:{}, val miou:{}'.format(loss_val, miou_val))
-            # if args.year==2016:
-            #     loss_val_2016, miou_val_2016 = validate(args, val_loader_2016, model)
-            #     # write loss and mIOU into tensorboard
-            #     writer.add_scalar('val_2016/Loss', loss_val_2016.detach().cpu().numpy(), epoch)
-            #     writer.add_scalar('val_2016/miou', miou_val_2016, epoch)
-            # elif args.year==2017:
-            #     loss_val_2017, miou_val_2017 = validate(args, val_loader_2017, model)
-            #     writer.add_scalar('val_2017/Loss', loss_val_2017.detach().cpu().numpy(), epoch)
-            #     writer.add_scalar('val_2017/miou', miou_val_2017, epoch)
-            # else:
-            #     args.year = 2016
-            #     loss_val_2016, miou_val_2016 = validate(args, val_loader_2016, model)
-            #     writer.add_scalar('val_2016/Loss', loss_val_2016.detach().cpu().numpy(), epoch)
-            #     writer.add_scalar('val_2016/miou', miou_val_2016, epoch)
-            #     args.year = 2017
-            #     loss_val_2017, miou_val_2017 = validate(args, val_loader_2017, model)
-            #     writer.add_scalar('val_2017/Loss', loss_val_2017.detach().cpu().numpy(), epoch)
-            #     writer.add_scalar('val_2017/miou', miou_val_2017, epoch)
-            #     args.year = 0
 
         model.train()
         # turn-off BN
@@ -297,8 +279,7 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
                         miou_record / (seq + 1),
                         seq / video_parts,
                         lr))
-                # loss_record = 0
-                # miou_record = 0
+
 
             # write into tensorboardX
             y1 = loss_video.detach().cpu().numpy()
@@ -372,29 +353,6 @@ if __name__ == '__main__':
                         separate_instance=False, only_single=False, target_size=(864, 480))
     val_loader = data.DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=2, pin_memory=True)
 
-    # if args.year == 2016:
-    #     val_dataset_2016 = DAVIS(DAVIS_ROOT, phase='val', imset='2016/val.txt', resolution='480p',
-    #                              separate_instance=False, only_single=False, target_size=(864, 480))
-    #     val_loader_2016 = data.DataLoader(val_dataset_2016, batch_size=1, shuffle=False, num_workers=2, pin_memory=True)
-    # elif args.year == 2017:
-    #     val_dataset_2017 = DAVIS(DAVIS_ROOT, phase='val', imset='2017/val.txt', resolution='480p',
-    #                              separate_instance=False, only_single=False, target_size=(864, 480))
-    #     val_loader_2017 = data.DataLoader(val_dataset_2017, batch_size=1, shuffle=False, num_workers=2, pin_memory=True)
-    # elif args.year == 1:
-    #     val_dataset_lyuan = DAVIS(DAVIS_ROOT, phase='val', imset='2017/lyuan.txt', resolution='480p',
-    #                               separate_instance=True, only_single=False, target_size=(864, 480))
-    #     val_loader_lyuan = data.DataLoader(val_dataset_lyuan, batch_size=1, shuffle=False, num_workers=2,
-    #                                        pin_memory=True)
-    # else:
-    #     val_dataset_2016 = DAVIS(DAVIS_ROOT, phase='val', imset='2016/val.txt', resolution='480p',
-    #                              separate_instance=False, only_single=False, target_size=(864, 480))
-    #     val_loader_2016 = data.DataLoader(val_dataset_2016, batch_size=1, shuffle=False, num_workers=2, pin_memory=True)
-    #     val_dataset_2017 = DAVIS(DAVIS_ROOT, phase='val', imset='2017/val.txt', resolution='480p',
-    #                              separate_instance=False, only_single=False, target_size=(864, 480))
-    #     val_loader_2017 = data.DataLoader(val_dataset_2017, batch_size=1, shuffle=False, num_workers=2, pin_memory=True)
-
-    # build model
-    # device_list = [int(i) for i in GPU.split(',')]
     model = nn.DataParallel(STM())
 
     if torch.cuda.is_available():
@@ -403,35 +361,11 @@ if __name__ == '__main__':
     # load weights.pth
     if args.load_from and not args.resume_from:
         print('load pretrained from:', args.load_from)
-        model.load_state_dict(torch.load(args.load_from), strict=True)
+        model.load_state_dict(torch.load(args.load_from), strict=False)
 
     if args.mode == "val":
         loss_val, miou_val = validate(args, val_loader, model)
         log.logger.info('val loss:{}, val miou:{}'.format(loss_val, miou_val))
-    #     # run val
-    #     with torch.no_grad():
-    #         if args.year == 2016:
-    #             loss_val_2016, miou_val_2016 = validate(args, val_loader_2016, model)
-    #             print('loss_val_2016:', loss_val_2016)
-    #             print('miou_val_2016:', miou_val_2016)
-    #         elif args.year == 2017:
-    #             loss_val_2017, miou_val_2017 = validate(args, val_loader_2017, model)
-    #             print('loss_val_2017:', loss_val_2017)
-    #             print('miou_val_2017:', miou_val_2017)
-    #         elif args.year == 1:
-    #             loss_val_lyuan, miou_val_lyuan = validate(args, val_loader_lyuan, model)
-    #             print('loss_val_2017:', loss_val_lyuan)
-    #             print('miou_val_2017:', miou_val_lyuan)
-    #         else:
-    #             args.year = 2016
-    #             loss_val_2016, miou_val_2016 = validate(args, val_loader_2016, model)
-    #             args.year = 2017
-    #             loss_val_2017, miou_val_2017 = validate(args, val_loader_2017, model)
-    #             print('loss_val_2016:', loss_val_2016)
-    #             print('miou_val_2016:', miou_val_2016)
-    #             print('loss_val_2017:', loss_val_2017)
-    #             print('miou_val_2017:', miou_val_2017)
-    #             args.year = 0
 
     elif args.mode == "train":
         # set training para

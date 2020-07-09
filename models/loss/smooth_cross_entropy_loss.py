@@ -27,6 +27,32 @@ class SmoothCrossEntropyLoss(torch.nn.KLDivLoss):
         else:
             raise Exception(f'No such reduction method: {self.reduction}')
 
+class SmoothCrossEntropyLoss_2(torch.nn.KLDivLoss):
+    def __init__(self, eps=0.1, *args, **kargs):
+        super(SmoothCrossEntropyLoss_2, self).__init__(*args, **kargs)
+        self.eps = eps
+
+    def forward(self, x, target):
+        # x is tensor after softmax
+        k = x.size(1)
+        eps = self.eps / (k - 1)
+        target_logit = torch.zeros(x.size(), device=x.device).fill_(eps)
+        target_logit.scatter_(1, target.unsqueeze(1), 1 - self.eps)
+        if self.reduction=='mean':
+            return super(SmoothCrossEntropyLoss_2, self).forward(
+                F.log_softmax(x, 1), target_logit) * k
+        elif self.reduction=='elementwise_mean':
+            return super(SmoothCrossEntropyLoss_2, self).forward(
+                F.log_softmax(x, 1), target_logit) * k
+        elif self.reduction=='none':
+            return super(SmoothCrossEntropyLoss_2, self).forward(
+                F.log_softmax(x, 1), target_logit).sum(1)
+        elif self.reduction=='sum':
+            return super(SmoothCrossEntropyLoss_2, self).forward(
+                F.log_softmax(x, 1), target_logit)
+        else:
+            raise Exception(f'No such reduction method: {self.reduction}')
+
 
 if __name__=='__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'

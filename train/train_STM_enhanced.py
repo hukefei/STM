@@ -22,15 +22,15 @@ from logging import handlers
 import os.path
 import time
 import datetime
+import cv2
 
 ### My libs
 from dataloader.dataset_rgmp_v1 import DAVIS
 from dataloader.train_stm_stage1 import YOUTUBE
 from dataloader.train_gcm_stage2 import YOUTUBE2
 from dataloader.train_stm_stage3 import DAVIS3
-from dataloader.train_tianchi import TIANCHI
-from dataloader.train_tianchi import TIANCHI_Stage1
-from models.model2 import STM
+from dataloader.train_tianchi import TIANCHI, TIANCHI_Stage1
+from models.model_enhanced import STM
 from models.loss.smooth_cross_entropy_loss import SmoothCrossEntropyLoss
 from models.loss.dice_loss import DiceLoss
 
@@ -85,8 +85,6 @@ def get_video_mIoU(predn, all_Mn):  # [c,t,h,w]
 def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
     # print('name:', name)
     # initialize storage tensors
-    Fs = Fs.cuda()
-    Ms = Ms.cuda()
     if Mem_every:
         to_memorize = [int(i) for i in np.arange(0, num_frames, step=Mem_every)]
     elif Mem_number:
@@ -95,22 +93,30 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
         raise NotImplementedError
 
     Es = torch.zeros_like(Ms).float().cuda()  # [1,1,50,480,864][b,c,t,h,w]
-    Es[:, :, 0] = Ms[:, :, 0]  # Ms: B,C,T,H,W
-    Rs = torch.zeros_like(Ms).float().cuda()  # [1,1,50,480,864][b,c,t,h,w]
-    Rs[:, :, 0] = Ms[:, :, 0]
-    b, c, t, h, w = Ms.shape
+    Es[:, :, 0] = Ms[:, :, 0]
 
-    Ps = torch.zeros((b, 2, t, h, w)).float().cuda()  # [b,c,t,h,w]
-    first_mask = Ms[:, :, 0]  # b,1,h,w
-    target_logit = torch.zeros((b, 2, h, w)).cuda()
-    target_logit.scatter_(1, first_mask, 1)  # b,2,h,w
-    Ps[:, :, 0] = target_logit
+    b, c, t, h, w = Fs.shape
+
+    Os = torch.zeros((b, c, int(h / 4), int(w / 4)))
+    first_frame = Fs[:, :, 0]
+    first_mask = Ms[:, :, 0]
+    first_frame = first_frame * first_mask.repeat(1, 3, 1, 1).type(torch.float)
+    for i in range(b):
+        mask_ = first_mask[i]
+        mask_ = mask_.squeeze(0).cpu().numpy().astype(np.uint8)
+        x, y, w_, h_ = cv2.boundingRect(mask_)
+        patch = first_frame[i, :, y:(y + h_), x:(x + w_)].cpu().numpy()
+        patch = patch.transpose(1, 2, 0)
+        patch = cv2.resize(patch, (int(h / 4), int(w / 4)))
+        patch = patch.transpose(2, 1, 0)
+        patch = torch.from_numpy(patch)
+        Os[i, :, :, :] = patch
 
     loss_video = torch.tensor(0.0).cuda()
 
     for t in range(1, num_frames):
         # memorize
-        pre_key, pre_value = model([Fs[:, :, t - 1], Es[:, :, t - 1]], mode='m')
+        pre_key, pre_value = model([Fs[:, :, t - 1], Es[:, :, t - 1]])
         pre_key = pre_key.unsqueeze(2)
         pre_value = pre_value.unsqueeze(2)
 
@@ -121,7 +127,7 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
             this_values_m = torch.cat([values, pre_value], dim=2)
 
         # segment
-        logits, p_m2, p_m3 = model([Fs[:, :, t], this_keys_m, this_values_m], mode='s')  # B 2 h w
+        logits, p_m2, p_m3 = model([Fs[:, :, t], Os, this_keys_m, this_values_m])  # B 2 h w
         em = F.softmax(logits, dim=1)[:, 1]  # B h w
         Es[:, 0, t] = em
 
@@ -131,14 +137,6 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
                        + 0.5 * _loss(F.interpolate(p_m2, scale_factor=8, mode='bilinear', align_corners=False), Ms_cuda)
                        + 0.25 * _loss(F.interpolate(p_m3, scale_factor=16, mode='bilinear', align_corners=False),
                                       Ms_cuda))
-
-        # refine
-        r_pred = model([Ps[:, :, t - 1], logits], mode='r')
-        Ps[:, :, t] = logits
-        loss_refine = _loss(r_pred, Ms_cuda)
-
-        rm = F.softmax(r_pred, dim=1)[:, 1]  # B h w
-        Rs[:, 0, t] = rm
 
         # update key and value
         if t - 1 in to_memorize:
@@ -162,13 +160,7 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
         video_mIoU = video_mIoU + get_video_mIoU(pred[n], Ms[n].cuda())  # mIOU of video(t frames) for each batch
     video_mIoU = video_mIoU / len(Ms)  # mean IoU among batch
 
-    pred_r = torch.round(Rs.float().cuda())
-    video_mIoU_r = 0
-    for n in range(len(Ms)):  # Nth batch
-        video_mIoU_r = video_mIoU_r + get_video_mIoU(pred_r[n], Ms[n].cuda())  # mIOU of video(t frames) for each batch
-    video_mIoU_r = video_mIoU_r / len(Ms)  # mean IoU among batch
-
-    return loss_video / num_frames, loss_refine / num_frames, video_mIoU, video_mIoU_r
+    return loss_video / num_frames, video_mIoU
 
 
 def validate(args, val_loader, model):
@@ -190,16 +182,12 @@ def validate(args, val_loader, model):
         # error_nums = 0
         with torch.no_grad():
             name = info['name']
-            loss_video, loss_refine, video_mIou, r_mIou = Run_video(args, Fs, Ms, num_frames, name, Mem_every=5,
-                                                                    Mem_number=None)
+            loss_video, video_mIou = Run_video(args, Fs, Ms, num_frames, name, Mem_every=5, Mem_number=None)
             loss_all_videos += loss_video
-            loss_all_videos += loss_refine
             miou_all_videos += video_mIou
             progressbar.set_description(
-                'val_complete:{}, name:{}, loss:{}, loss_refine:{}, miou:{}, r_miou:{}'.format(seq / len(val_loader),
-                                                                                               name, loss_video,
-                                                                                               loss_refine,
-                                                                                               video_mIou, r_mIou))
+                'val_complete:{}, name:{}, loss:{}, miou:{}'.format(seq / len(val_loader), name, loss_video,
+                                                                    video_mIou))
 
             if args.vis_val and args.mode == 'val':
                 videos_name.append(name[0])
@@ -252,7 +240,6 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
     epochs = args.epoch
 
     for epoch in range(epoch_start, epochs):
-
         model.train()
         # turn-off BN
         for m in model.modules():
@@ -266,28 +253,26 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
             Fs, Ms, info = batch['Fs'], batch['Ms'], batch['info']
             num_frames = info['num_frames'][0].item()
             name = info['name']
-            loss_video, loss_refine, video_mIou, r_mIou = Run_video(args, Fs, Ms, num_frames, name, Mem_every=1, Mem_number=None)
+            loss_video, video_mIou = Run_video(args, Fs, Ms, num_frames, name, Mem_every=1, Mem_number=None)
 
             # backward
             optimizer.zero_grad()
-            total_loss = loss_video + loss_refine
-            total_loss.backward()
+            loss_video.backward()
             optimizer.step()
 
             # record loss
             loss_record += loss_video.cpu().detach().numpy()
             miou_record += video_mIou
-            if (seq + 1) % 5 == 0:
+            if (seq + 1) % 30 == 0:
                 log.logger.info(
-                    'epoch:{}, loss_video:{:.2f}, loss_refine:{:.2f}, video_mIou:{:.2f}, refine_mIou:{:.2f}, \
-                    complete:{:.2f}, lr:{}'.format(
+                    'epoch:{}, loss_video:{:.2f}, video_mIou:{:.2f}, complete:{:.2f}, lr:{}'.format(
                         epoch,
                         loss_record / (seq + 1),
-                        loss_refine / (seq + 1),
                         miou_record / (seq + 1),
-                        r_mIou / (seq + 1),
                         seq / video_parts,
                         lr))
+                # loss_record = 0
+                # miou_record = 0
 
             # write into tensorboardX
             y1 = loss_video.detach().cpu().numpy()
@@ -296,7 +281,6 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
 
         # validate
         if args.train_with_val and (epoch + 1) % args.validate_interval == 0:
-            # validate
             loss_val, miou_val = validate(args, val_loader, model)
             writer.add_scalar('val/Loss', loss_val.detach().cpu().numpy(), epoch)
             writer.add_scalar('val/miou', miou_val, epoch)
@@ -382,22 +366,21 @@ if __name__ == '__main__':
     if args.mode == "val":
         loss_val, miou_val = validate(args, val_loader, model)
         log.logger.info('val loss:{}, val miou:{}'.format(loss_val, miou_val))
-
     elif args.mode == "train":
         # set training para
         clip_size = args.clip_size
         BATCH_SIZE = args.batch_size
 
         # prepare training data
-        # if args.train_data == 'youtube':
-        #     YOUTUBE_ROOT = args.youtube
-        #     train_dataset = YOUTUBE2(YOUTUBE_ROOT, phase='train', imset='train.txt', resolution='480p',
-        #                              separate_instance=False,
-        #                              only_single=False, target_size=(864, 480), clip_size=clip_size)
-        # elif args.train_data == 'davis':
-        train_dataset = TIANCHI_Stage1(DAVIS_ROOT, phase='train', imset='tianchi_train.txt', resolution='480p',
-                                       separate_instance=True, only_single=False, target_size=(864, 480),
-                                       clip_size=clip_size)
+        if args.train_data == 'youtube':
+            YOUTUBE_ROOT = args.youtube
+            train_dataset = YOUTUBE2(YOUTUBE_ROOT, phase='train', imset='train.txt', resolution='480p',
+                                     separate_instance=False,
+                                     only_single=False, target_size=(864, 480), clip_size=clip_size)
+        elif args.train_data == 'davis':
+            train_dataset = TIANCHI(DAVIS_ROOT, phase='train', imset='tianchi_train.txt', resolution='480p',
+                                    separate_instance=True, only_single=False, target_size=(864, 480),
+                                    clip_size=clip_size)
         train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
                                        pin_memory=True)
 

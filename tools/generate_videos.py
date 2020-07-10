@@ -1,12 +1,15 @@
 import os
 import cv2
-
+import datetime
 
 #  write videos
-root = '/data/sdv2/workspace/tianchi/dataset/tianchiyusai/'
+root = '/workspace/tianchi/dataset/tianchiyusai/'
 img_root = os.path.join(root, 'JPEGImages')
-ann_root = '/data/sdv2/STM_test/test/2007091020/tianchi'
-save_dir = '/data/sdv2/STM_test/test/2007091020/videos'
+ann_root = '/workspace/tianchi/STM/test/2007061026/tianchi/'
+save_dir = '/workspace/tianchi/STM/video/'
+rq = datetime.datetime.strftime(datetime.datetime.now(), '%m%d%H%M')
+code = 'STM'
+save_dir = os.path.join(save_dir, code+'_'+rq)
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
 

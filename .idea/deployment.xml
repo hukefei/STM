@@ -12,7 +12,7 @@
       <paths name="mmdet">
         <serverdata>
           <mappings>
-            <mapping deploy="/data/sdv2/STM_test" local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/data/sdv2/project_hkf/STM_test" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>

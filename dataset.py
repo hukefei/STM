@@ -100,24 +100,52 @@ class TIANCHI(data.Dataset):
         self.mask_dir = os.path.join(root, 'Annotations')
         self.image_dir = os.path.join(root, 'JPEGImages')
         self.target_size = target_size
+
+        self.single_object = single_object
         _imset_dir = os.path.join(root, 'ImageSets')
         _imset_f = os.path.join(_imset_dir, imset)
 
         self.videos = []
         self.num_frames = {}
-        self.num_objects = {}
         self.shape = {}
+        self.frame_list = {}
+        self.mask_list = {}
         with open(os.path.join(_imset_f), "r") as lines:
             for line in lines:
                 _video = line.rstrip('\n')
-                self.videos.append(_video)
-                self.num_frames[_video] = len(glob.glob(os.path.join(self.image_dir, _video, '*.jpg')))
-                _mask = np.array(Image.open(os.path.join(self.mask_dir, _video, '00000.png')).convert("P").resize(self.target_size))
-                self.num_objects[_video] = np.max(_mask)
-                self.shape[_video] = np.shape(_mask)
+                temp_img = os.listdir(os.path.join(self.image_dir, _video))
+                temp_img.sort()
 
-        self.K = 8
-        self.single_object = single_object
+                temp_mask = os.listdir(os.path.join(self.mask_dir, _video))
+                temp_mask.sort()
+                _mask = np.array(
+                    Image.open(os.path.join(self.mask_dir, _video, temp_mask[0])).convert("P").resize(self.target_size,
+                                                                                                      Image.NEAREST))
+
+                if self.single_object:
+                    temp_label = np.unique(_mask)
+                    temp_label.sort()
+                    # print(_video,temp_label)
+                    for i in temp_label:
+                        if i != 0:
+                            self.videos.append(_video + '_{}'.format(i))
+                            self.num_frames[_video + '_{}'.format(i)] = len(
+                                glob.glob(os.path.join(self.image_dir, _video, '*.jpg'))) + len(
+                                glob.glob(os.path.join(self.image_dir, _video, '*.png')))
+                            self.mask_list[_video + '_{}'.format(i)] = temp_mask
+                            self.frame_list[_video + '_{}'.format(i)] = temp_img
+                            # self.num_objects[_video + '_{}'.format(i)] = 1
+                            self.shape[_video + '_{}'.format(i)] = np.shape(_mask)
+                else:
+                    self.videos.append(_video)
+                    self.num_frames[_video] = len(glob.glob(os.path.join(self.image_dir, _video, '*.jpg'))) + len(
+                        glob.glob(os.path.join(self.image_dir, _video, '*.png')))
+                    self.mask_list[_video] = temp_mask
+                    self.frame_list[_video] = temp_img
+                    # self.num_objects[_video] = np.max(_mask)
+                    self.shape[_video] = np.shape(_mask)
+
+        self.K = 9
 
     def __len__(self):
         return len(self.videos)
@@ -139,31 +167,40 @@ class TIANCHI(data.Dataset):
         info = {}
         info['name'] = video
         info['num_frames'] = self.num_frames[video]
-        num_objects = self.num_objects[video]
+        info['ori_shape'] = self.shape[video]
+
+        if self.single_object:
+            video_true_name, object_label = video.split('_')
+            object_label = int(object_label)
+        else:
+            video_true_name = video
+            object_label = 1
 
         N_frames = np.empty((self.num_frames[video],) + self.shape[video] + (3,), dtype=np.float32)
-        N_masks = np.empty((self.num_frames[video],) + self.shape[video], dtype=np.uint8)
+        N_masks = np.empty((1,) + self.shape[video], dtype=np.uint8)
         for f in range(self.num_frames[video]):
-            img_file = os.path.join(self.image_dir, video, '{:05d}.jpg'.format(f))
-            original_frame = np.array(Image.open(img_file).convert('RGB'))
-            info['ori_shape'] = original_frame.shape[:2]
-            N_frames[f] = np.array(Image.open(img_file).convert('RGB').resize(self.target_size)) / 255.
-            try:
-                mask_file = os.path.join(self.mask_dir, video, '{:05d}.png'.format(f))
-                N_masks[f] = np.array(Image.open(mask_file).convert('P').resize(self.target_size), dtype=np.uint8)
-            except:
-                N_masks[f] = 255
+            img_file = os.path.join(self.image_dir, video_true_name, self.frame_list[video][f])
+            N_frames[f] = np.array(
+                Image.open(img_file).convert('RGB').resize(self.target_size, Image.ANTIALIAS)) / 255.
+
+        mask_file = os.path.join(self.mask_dir, video_true_name, self.mask_list[video][0])
+        temp = np.array(Image.open(mask_file).convert('P').resize(self.target_size, Image.NEAREST), dtype=np.uint8)
+        if np.unique(temp).any() not in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
+            print(np.unique(temp))
+        temp_mask = np.zeros(temp.shape)
+        if self.single_object:
+            temp_mask[temp == object_label] = 1
+        else:
+            temp_mask[temp > 0] = 1
+        N_masks[0] = (temp_mask != 0).astype(np.uint8)
 
         Fs = torch.from_numpy(np.transpose(N_frames.copy(), (3, 0, 1, 2)).copy()).float()
         if self.single_object:
-            N_masks = (N_masks > 0.5).astype(np.uint8) * (N_masks < 255).astype(np.uint8)
-            Ms = torch.from_numpy(self.All_to_onehot(N_masks).copy()).float()
-            num_objects = torch.LongTensor([int(1)])
-            return Fs, Ms, num_objects, info
+            Ms = torch.from_numpy(N_masks[:, :, :, np.newaxis]).permute(3, 0, 1, 2).long()
+            return Fs, Ms, info
         else:
             Ms = torch.from_numpy(self.All_to_onehot(N_masks).copy()).float()
-            num_objects = torch.LongTensor([int(num_objects)])
-            return Fs, Ms, num_objects, info
+            return Fs, Ms, info
 
     def aug(self, image, mask, seed):
         ia.seed(seed)

@@ -24,7 +24,7 @@ import datetime
 
 ### My libs
 from dataset import TIANCHI
-from model import STM
+from models.model3 import STM
 
 torch.set_grad_enabled(False)  # Volatile
 
@@ -61,8 +61,8 @@ if VIZ:
 
 palette = Image.open(DATA_ROOT + '/Annotations/606332/00000.png').getpalette()
 
-
-def Run_video(Fs, Ms, num_frames, num_objects, Mem_every=None, Mem_number=None):
+def Run_video(Fs, Ms, num_frames, Mem_every=None, Mem_number=None):
+    # print('name:', name)
     # initialize storage tensors
     if Mem_every:
         to_memorize = [int(i) for i in np.arange(0, num_frames, step=Mem_every)]
@@ -71,34 +71,72 @@ def Run_video(Fs, Ms, num_frames, num_objects, Mem_every=None, Mem_number=None):
     else:
         raise NotImplementedError
 
-    Es = torch.zeros_like(Ms)
+    b, c, t, h, w = Fs.shape
+    Es = torch.zeros((b, 1, t, h, w)).float().cuda()  # [1,1,50,480,864][b,c,t,h,w]
     Es[:, :, 0] = Ms[:, :, 0]
 
-    for t in tqdm.tqdm(range(1, num_frames)):
+    for t in range(1, num_frames):
         # memorize
-        with torch.no_grad():
-            prev_key, prev_value = model(Fs[:, :, t - 1], Es[:, :, t - 1], torch.tensor([num_objects]))
+        pre_key, pre_value = model([Fs[:, :, t - 1], Es[:, :, t - 1]])
+        pre_key = pre_key.unsqueeze(2)
+        pre_value = pre_value.unsqueeze(2)
 
-        if t - 1 == 0:  #
-            this_keys, this_values = prev_key, prev_value  # only prev memory
-        else:
-            this_keys = torch.cat([keys, prev_key], dim=3)
-            this_values = torch.cat([values, prev_value], dim=3)
+        if t - 1 == 0:  # the first frame
+            this_keys_m, this_values_m = pre_key, pre_value
+        else:  # other frame
+            this_keys_m = torch.cat([keys, pre_key], dim=2)
+            this_values_m = torch.cat([values, pre_value], dim=2)
 
         # segment
-        with torch.no_grad():
-            logit = model(Fs[:, :, t], this_keys, this_values, torch.tensor([num_objects]))
-        Es[:, :, t] = F.softmax(logit, dim=1)
+        logits, p_m2, p_m3 = model([Fs[:, :, t], Es[:, :, t - 1], this_keys_m, this_values_m])  # B 2 h w
+        em = F.softmax(logits, dim=1)[:, 1]  # B h w
+        Es[:, 0, t] = em
 
-        # update
+        # update key and value
         if t - 1 in to_memorize:
-            keys, values = this_keys, this_values
+            keys, values = this_keys_m, this_values_m
 
-    pred = np.argmax(Es[0].cpu().numpy(), axis=0).astype(np.uint8)
+    pred = torch.round(Es.float())
+
     return pred, Es
 
+# def Run_video(Fs, Ms, num_frames, num_objects, Mem_every=None, Mem_number=None):
+#     # initialize storage tensors
+#     if Mem_every:
+#         to_memorize = [int(i) for i in np.arange(0, num_frames, step=Mem_every)]
+#     elif Mem_number:
+#         to_memorize = [int(round(i)) for i in np.linspace(0, num_frames, num=Mem_number + 2)[:-1]]
+#     else:
+#         raise NotImplementedError
+#
+#     Es = torch.zeros_like(Ms)
+#     Es[:, :, 0] = Ms[:, :, 0]
+#
+#     for t in tqdm.tqdm(range(1, num_frames)):
+#         # memorize
+#         with torch.no_grad():
+#             prev_key, prev_value = model(Fs[:, :, t - 1], Es[:, :, t - 1], torch.tensor([num_objects]))
+#
+#         if t - 1 == 0:  #
+#             this_keys, this_values = prev_key, prev_value  # only prev memory
+#         else:
+#             this_keys = torch.cat([keys, prev_key], dim=3)
+#             this_values = torch.cat([values, prev_value], dim=3)
+#
+#         # segment
+#         with torch.no_grad():
+#             logit = model(Fs[:, :, t], this_keys, this_values, torch.tensor([num_objects]))
+#         Es[:, :, t] = F.softmax(logit, dim=1)
+#
+#         # update
+#         if t - 1 in to_memorize:
+#             keys, values = this_keys, this_values
+#
+#     pred = np.argmax(Es[0].cpu().numpy(), axis=0).astype(np.uint8)
+#     return pred, Es
 
-Testset = TIANCHI(DATA_ROOT, imset='test.txt', single_object=False)
+
+Testset = TIANCHI(DATA_ROOT, imset='test.txt', single_object=True)
 Testloader = data.DataLoader(Testset, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
 
 model = nn.DataParallel(STM())
@@ -119,22 +157,22 @@ date = datetime.datetime.strftime(datetime.datetime.now(), '%y%m%d%H%M')
 print('Start Testing:', code_name)
 
 for seq, V in enumerate(Testloader):
-    Fs, Ms, num_objects, info = V
+    Fs, Ms, info = V
     seq_name = info['name'][0]
     ori_shape = info['ori_shape']
     num_frames = info['num_frames'][0].item()
-    print('[{}]: num_frames: {}, num_objects: {}'.format(seq_name, num_frames, num_objects[0][0]))
+    print('[{}]: num_frames: {}'.format(seq_name, num_frames))
 
-    pred, Es = Run_video(Fs, Ms, num_frames, num_objects, Mem_every=5, Mem_number=None)
+    pred, Es = Run_video(Fs, Ms, num_frames, Mem_every=5, Mem_number=None)
 
     # Save results for quantitative eval ######################
     test_path = os.path.join('./test', date, code_name, seq_name)
     if not os.path.exists(test_path):
         os.makedirs(test_path)
     for f in range(num_frames):
-        img_E = Image.fromarray(pred[f])
-        img_E = img_E.resize(ori_shape[::-1])
+        img_E = Image.fromarray(pred[0, 0, f].cpu().numpy().astype(np.uint8))
         img_E.putpalette(palette)
+        img_E = img_E.resize(ori_shape[::-1])
         img_E.save(os.path.join(test_path, '{:05d}.png'.format(f)))
 
     if VIZ:

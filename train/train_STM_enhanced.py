@@ -30,7 +30,8 @@ from dataloader.train_stm_stage1 import YOUTUBE
 from dataloader.train_gcm_stage2 import YOUTUBE2
 from dataloader.train_stm_stage3 import DAVIS3
 from dataloader.train_tianchi import TIANCHI, TIANCHI_Stage1
-from models.model_enhanced import STM
+# from models.model_enhanced import STM
+from models.model_enhanced_aspp import STM
 from models.loss.smooth_cross_entropy_loss import SmoothCrossEntropyLoss
 from models.loss.dice_loss import DiceLoss
 
@@ -82,7 +83,7 @@ def get_video_mIoU(predn, all_Mn):  # [c,t,h,w]
     return i / (u + 1e-6)
 
 
-def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
+def Run_video(model, Fs, Ms, num_frames, Mem_every=None, Mem_number=None, mode='train'):
     # print('name:', name)
     # initialize storage tensors
     if Mem_every:
@@ -92,25 +93,24 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
     else:
         raise NotImplementedError
 
-    Es = torch.zeros_like(Ms).float().cuda()  # [1,1,50,480,864][b,c,t,h,w]
+    b, c, t, h, w = Fs.shape
+    Es = torch.zeros((b, 1, t, h, w)).float().cuda()  # [1,1,50,480,864][b,c,t,h,w]
     Es[:, :, 0] = Ms[:, :, 0]
 
-    b, c, t, h, w = Fs.shape
-
-    Os = torch.zeros((b, c, int(h / 4), int(w / 4)))
-    first_frame = Fs[:, :, 0]
-    first_mask = Ms[:, :, 0]
-    first_frame = first_frame * first_mask.repeat(1, 3, 1, 1).type(torch.float)
-    for i in range(b):
-        mask_ = first_mask[i]
-        mask_ = mask_.squeeze(0).cpu().numpy().astype(np.uint8)
-        x, y, w_, h_ = cv2.boundingRect(mask_)
-        patch = first_frame[i, :, y:(y + h_), x:(x + w_)].cpu().numpy()
-        patch = patch.transpose(1, 2, 0)
-        patch = cv2.resize(patch, (int(h / 4), int(w / 4)))
-        patch = patch.transpose(2, 1, 0)
-        patch = torch.from_numpy(patch)
-        Os[i, :, :, :] = patch
+    # Os = torch.zeros((b, c, int(h / 4), int(w / 4)))
+    # first_frame = Fs[:, :, 0]
+    # first_mask = Ms[:, :, 0]
+    # first_frame = first_frame * first_mask.repeat(1, 3, 1, 1).type(torch.float)
+    # for i in range(b):
+    #     mask_ = first_mask[i]
+    #     mask_ = mask_.squeeze(0).cpu().numpy().astype(np.uint8)
+    #     x, y, w_, h_ = cv2.boundingRect(mask_)
+    #     patch = first_frame[i, :, y:(y + h_), x:(x + w_)].cpu().numpy()
+    #     patch = patch.transpose(1, 2, 0)
+    #     patch = cv2.resize(patch, (int(h / 4), int(w / 4)))
+    #     patch = patch.transpose(2, 1, 0)
+    #     patch = torch.from_numpy(patch)
+    #     Os[i, :, :, :] = patch
 
     loss_video = torch.tensor(0.0).cuda()
 
@@ -127,40 +127,46 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
             this_values_m = torch.cat([values, pre_value], dim=2)
 
         # segment
-        logits, p_m2, p_m3 = model([Fs[:, :, t], Os, this_keys_m, this_values_m])  # B 2 h w
+        # logits, p_m2, p_m3 = model([Fs[:, :, t], Os, this_keys_m, this_values_m])  # B 2 h w
+        logits, p_m2, p_m3 = model([Fs[:, :, t], this_keys_m, this_values_m])
         em = F.softmax(logits, dim=1)[:, 1]  # B h w
         Es[:, 0, t] = em
-
-        #  calculate loss on cuda
-        Ms_cuda = Ms[:, 0, t].cuda()
-        loss_video += (_loss(logits, Ms_cuda)
-                       + 0.5 * _loss(F.interpolate(p_m2, scale_factor=8, mode='bilinear', align_corners=False), Ms_cuda)
-                       + 0.25 * _loss(F.interpolate(p_m3, scale_factor=16, mode='bilinear', align_corners=False),
-                                      Ms_cuda))
 
         # update key and value
         if t - 1 in to_memorize:
             keys, values = this_keys_m, this_values_m
 
-    if args.save_masks and args.mode == 'val':
-        # save mask
-        save_img_path = os.path.join(args.work_dir, 'masks', name[0])
-        if not os.path.exists(save_img_path):
-            os.makedirs(save_img_path)
-        for i in range(len(Es[0, 0])):
-            img_np = Es[0, 0, i].detach().cpu().numpy()
-            img_np = (np.round(img_np * 255)).astype(np.uint8)
-            img = Image.fromarray(img_np).convert('L')
-            img.save(save_img_path + '/' + '{:05d}.png'.format(i))
+        #  calculate loss on cuda
+        if mode == 'train':
+            Ms_cuda = Ms[:, 0, t].cuda()
+            loss_video += (_loss(logits, Ms_cuda) + 0.5 * _loss(p_m2, Ms_cuda) + 0.25 * _loss(p_m3, Ms_cuda))
+
+    # if args.save_masks and args.mode == 'val':
+    #     # save mask
+    #     save_img_path = os.path.join(args.work_dir, 'masks', name[0])
+    #     if not os.path.exists(save_img_path):
+    #         os.makedirs(save_img_path)
+    #     for i in range(len(Es[0, 0])):
+    #         img_np = Es[0, 0, i].detach().cpu().numpy()
+    #         img_np = (np.round(img_np * 255)).astype(np.uint8)
+    #         img = Image.fromarray(img_np).convert('L')
+    #         img.save(save_img_path + '/' + '{:05d}.png'.format(i))
 
     #  calculate mIOU on cuda
     pred = torch.round(Es.float().cuda())
-    video_mIoU = 0
-    for n in range(len(Ms)):  # Nth batch
-        video_mIoU = video_mIoU + get_video_mIoU(pred[n], Ms[n].cuda())  # mIOU of video(t frames) for each batch
-    video_mIoU = video_mIoU / len(Ms)  # mean IoU among batch
+    if mode == 'train':
+        video_mIoU = 0
+        for n in range(len(Ms)):  # Nth batch
+            video_mIoU = video_mIoU + get_video_mIoU(pred[n], Ms[n].cuda())  # mIOU of video(t frames) for each batch
+        video_mIoU = video_mIoU / len(Ms)  # mean IoU among batch
 
-    return loss_video / num_frames, video_mIoU
+    loss_video /= num_frames
+
+    #return
+    if mode == 'train':
+        return loss_video, video_mIoU
+    elif mode == 'test':
+        return pred, Es
 
 
 def validate(args, val_loader, model):
@@ -182,7 +188,7 @@ def validate(args, val_loader, model):
         # error_nums = 0
         with torch.no_grad():
             name = info['name']
-            loss_video, video_mIou = Run_video(args, Fs, Ms, num_frames, name, Mem_every=5, Mem_number=None)
+            loss_video, video_mIou = Run_video(model, Fs, Ms, num_frames, Mem_every=5, Mem_number=None)
             loss_all_videos += loss_video
             miou_all_videos += video_mIou
             progressbar.set_description(
@@ -253,7 +259,7 @@ def train(args, train_loader, model, writer, epoch_start=0, lr=1e-5):
             Fs, Ms, info = batch['Fs'], batch['Ms'], batch['info']
             num_frames = info['num_frames'][0].item()
             name = info['name']
-            loss_video, video_mIou = Run_video(args, Fs, Ms, num_frames, name, Mem_every=1, Mem_number=None)
+            loss_video, video_mIou = Run_video(model, Fs, Ms, num_frames, Mem_every=1, Mem_number=None)
 
             # backward
             optimizer.zero_grad()
@@ -349,8 +355,8 @@ if __name__ == '__main__':
     DAVIS_ROOT = args.davis
     palette = Image.open(DAVIS_ROOT + '/Annotations/606332/00000.png').getpalette()
 
-    val_dataset = DAVIS(DAVIS_ROOT, phase='val', imset='tianchi_val.txt', resolution='480p',
-                        separate_instance=False, only_single=False, target_size=(864, 480))
+    val_dataset = DAVIS(DAVIS_ROOT, phase='val', imset='total_val.txt', resolution='480p',
+                        separate_instance=False, only_single=False, target_size=(832, 448))
     val_loader = data.DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=2, pin_memory=True)
 
     model = nn.DataParallel(STM())
@@ -372,15 +378,9 @@ if __name__ == '__main__':
         BATCH_SIZE = args.batch_size
 
         # prepare training data
-        if args.train_data == 'youtube':
-            YOUTUBE_ROOT = args.youtube
-            train_dataset = YOUTUBE2(YOUTUBE_ROOT, phase='train', imset='train.txt', resolution='480p',
-                                     separate_instance=False,
-                                     only_single=False, target_size=(864, 480), clip_size=clip_size)
-        elif args.train_data == 'davis':
-            train_dataset = TIANCHI(DAVIS_ROOT, phase='train', imset='tianchi_train.txt', resolution='480p',
-                                    separate_instance=True, only_single=False, target_size=(864, 480),
-                                    clip_size=clip_size)
+        train_dataset = TIANCHI(DAVIS_ROOT, phase='train', imset='total_train.txt', resolution='480p',
+                                separate_instance=True, only_single=False, target_size=(832, 448),
+                                clip_size=clip_size, only_multiple=True)
         train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
                                        pin_memory=True)
 

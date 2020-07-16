@@ -5,8 +5,8 @@ import datetime
 #  write videos
 root = '/data/sdv2/workspace/tianchi/dataset/tianchiyusai'
 img_root = os.path.join(root, 'JPEGImages')
-ann_root = '/data/sdv2/project_hkf/STM_test/test/2007131532/merge/'
-save_dir = '/data/sdv2/project_hkf/STM_test/test/2007131532/videos/'
+ann_root = '/data/sdv2/project_hkf/STM_test/inference/test/2007160943/merge'
+save_dir = '/data/sdv2/project_hkf/STM_test/inference/test/2007160943/videos'
 rq = datetime.datetime.strftime(datetime.datetime.now(), '%m%d%H%M')
 code = 'STM'
 save_dir = os.path.join(save_dir, code+'_'+rq)

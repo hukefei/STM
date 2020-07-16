@@ -71,6 +71,7 @@ class Encoder_M(nn.Module):
     def forward(self, in_f, in_m):
         f = (in_f - self.mean) / self.std
         o = torch.zeros_like(in_m).float()
+
         in_m = self.conv1_m(in_m)
         x = self.conv1(f) + in_m  # + self.conv1_o(o)
         x = self.bn1(x)
@@ -91,8 +92,6 @@ class Encoder_Q(nn.Module):
         self.relu = resnet.relu  # 1/2, 64
         self.maxpool = resnet.maxpool
 
-        self.conv1_m = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-
         self.res2 = resnet.layer1  # 1/4, 256
         self.res3 = resnet.layer2  # 1/8, 512
         self.res4 = resnet.layer3  # 1/8, 1024
@@ -100,10 +99,10 @@ class Encoder_Q(nn.Module):
         self.register_buffer('mean', torch.FloatTensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
         self.register_buffer('std', torch.FloatTensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
 
-    def forward(self, in_f, in_m):
+    def forward(self, in_f):
         f = (in_f - self.mean) / self.std
 
-        x = self.conv1(f) + self.conv1_m(in_m)
+        x = self.conv1(f)
         x = self.bn1(x)
         c1 = self.relu(x)  # 1/2, 64
         x = self.maxpool(c1)  # 1/4, 64
@@ -131,7 +130,8 @@ class Refine(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, mdim):
         super(Decoder, self).__init__()
-        self.convFM = nn.Conv2d(1024, mdim, kernel_size=(3, 3), padding=(1, 1), stride=1)
+        self.ASPP = ASPP(1024, mdim)
+        # self.convFM = nn.Conv2d(1024, mdim, kernel_size=(3, 3), padding=(1, 1), stride=1)
         self.ResMM = ResBlock(mdim, mdim)
         self.RF3 = Refine(512, mdim)  # 1/8 -> 1/4
         self.RF2 = Refine(256, mdim)  # 1/4 -> 1
@@ -139,7 +139,8 @@ class Decoder(nn.Module):
         self.pred2 = nn.Conv2d(mdim, 2, kernel_size=(3, 3), padding=(1, 1), stride=1)
 
     def forward(self, r4, r3, r2):
-        m4 = self.ResMM(self.convFM(r4))
+        # m4 = self.ResMM(self.convFM(r4))
+        m4 = self.ResMM(self.ASPP(r4))
         m3 = self.RF3(r3, m4)  # out: 1/8, 256
         m2 = self.RF2(r2, m3)  # out: 1/4, 256
 
@@ -147,10 +148,10 @@ class Decoder(nn.Module):
         p3 = self.pred2(F.relu(m3))
         p4 = self.pred2(F.relu(m4))
 
-        p = F.interpolate(p2, scale_factor=4, mode='bilinear', align_corners=False)
+        p2 = F.interpolate(p2, scale_factor=4, mode='bilinear', align_corners=False)
         p3 = F.interpolate(p3, scale_factor=8, mode='bilinear', align_corners=False)
         p4 = F.interpolate(p4, scale_factor=16, mode='bilinear', align_corners=False)
-        return p, p3, p4  # , p2, p3, p4
+        return p2, p3, p4  # , p2, p3, p4
 
 
 class KeyValue(nn.Module):
@@ -194,10 +195,36 @@ class Memory(nn.Module):
         mem = mem.view(B, C_value, H, W)
 
         final_value = torch.cat([mem, value_q], dim=1)
-        # print('mem:', torch.max(mem), torch.min(mem))
-        # print('value_q:', torch.max(value_q), torch.min(value_q))
 
         return final_value
+
+
+class ASPP(nn.Module):
+    def __init__(self, in_channel=512, depth=256):
+        super(ASPP, self).__init__()
+        self.mean = nn.AdaptiveAvgPool2d((1, 1))  # (1,1)means ouput_dim
+        self.conv = nn.Conv2d(in_channel, depth, 1, 1)
+        self.atrous_block1 = nn.Conv2d(in_channel, depth, 1, 1)
+        self.atrous_block6 = nn.Conv2d(in_channel, depth, 3, 1, padding=6, dilation=6)
+        self.atrous_block12 = nn.Conv2d(in_channel, depth, 3, 1, padding=12, dilation=12)
+        self.atrous_block18 = nn.Conv2d(in_channel, depth, 3, 1, padding=18, dilation=18)
+        self.conv_1x1_output = nn.Conv2d(depth * 5, depth, 1, 1)
+
+    def forward(self, x):
+        size = x.shape[2:]
+
+        image_features = self.mean(x)
+        image_features = self.conv(image_features)
+        image_features = F.upsample(image_features, size=size, mode='bilinear')
+
+        atrous_block1 = self.atrous_block1(x)
+        atrous_block6 = self.atrous_block6(x)
+        atrous_block12 = self.atrous_block12(x)
+        atrous_block18 = self.atrous_block18(x)
+
+        net = self.conv_1x1_output(torch.cat([image_features, atrous_block1, atrous_block6,
+                                              atrous_block12, atrous_block18], dim=1))
+        return net
 
 
 class STM(nn.Module):
@@ -212,7 +239,7 @@ class STM(nn.Module):
         self.Memory = Memory()
         self.Decoder = Decoder(256)
 
-    def segment(self, frame, prev_mask, key, value):
+    def segment(self, frame, key, value):
         '''
         :param frame: 当前需要分割的image；[B,C,H,W]
         :param key: 当前memory的key；[B,C,T,H,W]
@@ -220,17 +247,24 @@ class STM(nn.Module):
         :return: logits []
         '''
         # encode
-        r4, r3, r2, _, _, x = self.Encoder_Q(frame, prev_mask)
+        r4, r3, r2, _, _, x = self.Encoder_Q(frame)
+        # t4, t3, t2, _, _, tx = self.Encoder_Q(template)
+        # b, c, h, w = r4.shape
+        # f = torch.zeros(b, 1, h, w).cuda()
+        # for i in range(b):
+        #     y = F.conv2d(r4[i].unsqueeze(0), t4[i].unsqueeze(0), padding=(3, 6))
+        #     f[i] = y
+        # r4 = torch.cat([r4, f], dim=1)
         curKey, curValue = self.KV_Q_r4(r4)  # 1, dim, H/16, W/16
 
         # memory select
         final_value = self.Memory(key, value, curKey, curValue)
-        logits, p3, p4 = self.Decoder(final_value, r3, r2)  # [b,2,h,w]
+        logits, p_m2, p_m3 = self.Decoder(final_value, r3, r2)  # [b,2,h,w]
         logits = self.get_logit(logits)
-        p3 = self.get_logit(p3)
-        p4 = self.get_logit(p4)
+        p_m2 = self.get_logit(p_m2)
+        p_m3 = self.get_logit(p_m3)
 
-        return logits, p3, p4
+        return logits, p_m2, p_m3
 
     @staticmethod
     def get_logit(logits):
@@ -260,9 +294,6 @@ class STM(nn.Module):
         # args: Fs[:,:,t-1]
         # kwargs: Es[:,:,t-1]
         if len(args) > 2:  # keys
-            logits, p3, p4 = self.segment(args[0], args[1], args[2], args[3])
-            curMask = F.softmax(logits, dim=1)[:, 1].unsqueeze(1)
-            r_1, r_2, r_3 = self.segment(args[0], curMask, args[2], args[3])
-            return logits, p3, p4, r_1, r_2, r_3
+            return self.segment(args[0], args[1], args[2])
         else:
             return self.memorize(args[0], args[1])

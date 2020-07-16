@@ -95,7 +95,7 @@ class TIANCHI(data.Dataset):
     Dataset for DAVIS
     '''
 
-    def __init__(self, root, imset='2017/train.txt', single_object=False, target_size=(864, 480)):
+    def __init__(self, root, imset='2017/train.txt', single_object=False, target_size=(832, 448)):
         self.root = root
         self.mask_dir = os.path.join(root, 'Annotations')
         self.image_dir = os.path.join(root, 'JPEGImages')

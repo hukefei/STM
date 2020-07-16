@@ -50,8 +50,8 @@ def parse_args():
     parser.add_argument('--clip_size', type=int, default=3)
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--epoch', type=int, default=100)
-    parser.add_argument('--save_interval', type=int, default=4)
-    parser.add_argument('--validate_interval', type=int, default=4)
+    parser.add_argument('--save_interval', type=int, default=1)
+    parser.add_argument('--validate_interval', type=int, default=1)
     parser.add_argument("--davis", type=str, default='/data/sdv2/workspace/tianchi/dataset/tianchiyusai')
     parser.add_argument("--youtube", type=str, default='/workspace/tianchi/dataset/youtube_complete/')
     parser.add_argument("--gpu", type=str, default='0', help="0; 0,1; 0,3; etc")
@@ -109,17 +109,19 @@ def Run_video(args, Fs, Ms, num_frames, name, Mem_every=None, Mem_number=None):
             this_values_m = torch.cat([values, pre_value], dim=2)
 
         # segment
-        logits, p_m2, p_m3 = model([Fs[:, :, t], Es[:, :, t - 1], this_keys_m, this_values_m])  # B 2 h w
-        em = F.softmax(logits, dim=1)[:, 1]  # B h w
+        logits, p3, p4, r_1, r_2, r_3 = model([Fs[:, :, t], Es[:, :, t - 1], this_keys_m, this_values_m])  # B 2 h w
+        em = F.softmax(r_1, dim=1)[:, 1]  # B h w
         Es[:, 0, t] = em
 
         #  calculate loss on cuda
         Ms_cuda = Ms[:, 0, t].cuda()
         loss_video += (_loss(logits, Ms_cuda)
-                       + 0.5 * _loss(F.interpolate(p_m2, scale_factor=8, mode='bilinear', align_corners=False), Ms_cuda)
-                       + 0.25 * _loss(F.interpolate(p_m3, scale_factor=16, mode='bilinear', align_corners=False),
-                                      Ms_cuda))
+                       + 0.5 * _loss(p3, Ms_cuda)
+                       + 0.25 * _loss(p4, Ms_cuda))
 
+        loss_video += (_loss(r_1, Ms_cuda)
+                       + 0.5 * _loss(r_2, Ms_cuda)
+                       + 0.25 * _loss(r_3, Ms_cuda))
 
         # update key and value
         if t - 1 in to_memorize:
@@ -332,8 +334,8 @@ if __name__ == '__main__':
     DAVIS_ROOT = args.davis
     palette = Image.open(DAVIS_ROOT + '/Annotations/606332/00000.png').getpalette()
 
-    val_dataset = DAVIS(DAVIS_ROOT, phase='val', imset='tianchi_val.txt', resolution='480p',
-                        separate_instance=False, only_single=False, target_size=(864, 480))
+    val_dataset = DAVIS(DAVIS_ROOT, phase='val', imset='total_val.txt', resolution='480p',
+                        separate_instance=False, only_single=False, target_size=(832, 448))
     val_loader = data.DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=2, pin_memory=True)
 
     model = nn.DataParallel(STM())
@@ -355,15 +357,9 @@ if __name__ == '__main__':
         BATCH_SIZE = args.batch_size
 
         # prepare training data
-        if args.train_data == 'youtube':
-            YOUTUBE_ROOT = args.youtube
-            train_dataset = YOUTUBE2(YOUTUBE_ROOT, phase='train', imset='train.txt', resolution='480p',
-                                     separate_instance=False,
-                                     only_single=False, target_size=(864, 480), clip_size=clip_size)
-        elif args.train_data == 'davis':
-            train_dataset = TIANCHI(DAVIS_ROOT, phase='train', imset='tianchi_train.txt', resolution='480p',
-                                    separate_instance=True, only_single=False, target_size=(864, 480),
-                                    clip_size=clip_size)
+        train_dataset = TIANCHI(DAVIS_ROOT, phase='train', imset='total_train.txt', resolution='480p',
+                                    separate_instance=True, only_single=False, target_size=(832, 448),
+                                    clip_size=clip_size, only_multiple=True)
         train_loader = data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
                                        pin_memory=True)
 

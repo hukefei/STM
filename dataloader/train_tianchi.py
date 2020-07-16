@@ -70,17 +70,18 @@ class TIANCHI(data.Dataset):
     '''
 
     def __init__(self, root, phase, imset='2016/val.txt', resolution='480p', separate_instance=False, only_single=False,
-                 target_size=(864, 480), clip_size=None, interval=1):
+                 target_size=(864, 480), clip_size=None, only_multiple=False):
         assert phase in ['train']
         self.phase = phase
         self.root = root
         self.clip_size = clip_size
         self.target_size = target_size
-        self.interval = interval
         self.SI = separate_instance  # 一个instance算一个视频
         if self.SI:
             assert not only_single
         self.OS = only_single  # 只统计只有一个instance的视频
+        self.OM = only_multiple
+        assert not (self.OM and self.OS)
 
         if imset[0] != '2':
             self.mask_dir = os.path.join(root, 'Annotations')
@@ -98,6 +99,7 @@ class TIANCHI(data.Dataset):
         self.shape = {}
         self.frame_list = {}
         self.mask_list = {}
+        self.not_empty_frames = {}
         # print(_imset_f)
         with open(os.path.join(_imset_f), "r") as lines:
             for line in lines:
@@ -109,7 +111,18 @@ class TIANCHI(data.Dataset):
                 temp_mask.sort()
                 _mask = np.array(
                     Image.open(os.path.join(self.mask_dir, _video, temp_mask[0])).convert("P").resize(self.target_size,
-                                                                                                      Image.NEAREST))
+                                                                                                      Image.BILINEAR))
+                num_objects = _mask.max()
+                if self.OM and num_objects == 1:
+                    continue
+                if self.OS and num_objects > 1:
+                    continue
+                if len(temp_img) != len(temp_mask):
+                    continue
+                if len(temp_img) < clip_size:
+                    continue
+
+                self.not_empty_frames.setdefault(_video, {})
 
                 if self.SI:
                     temp_label = np.unique(_mask)
@@ -117,6 +130,8 @@ class TIANCHI(data.Dataset):
                     # print(_video,temp_label)
                     for i in temp_label:
                         if i != 0:
+                            self.not_empty_frames[_video].setdefault(i, {})
+
                             self.videos.append(_video + '_{}'.format(i))
                             self.num_frames[_video + '_{}'.format(i)] = len(
                                 glob.glob(os.path.join(self.image_dir, _video, '*.jpg'))) + len(
@@ -125,6 +140,20 @@ class TIANCHI(data.Dataset):
                             self.frame_list[_video + '_{}'.format(i)] = temp_img
                             # self.num_objects[_video + '_{}'.format(i)] = 1
                             self.shape[_video + '_{}'.format(i)] = np.shape(_mask)
+                            #
+                            # not_empty_frames = []
+                            # empty_frames = []
+                            # for f in range(num_frames):
+                            #     mask_file = os.path.join(self.mask_dir, _video, self.mask_list[_video + '_{}'.format(i)][i])
+                            #     temp = np.array(Image.open(mask_file).convert('P'), dtype=np.uint8)
+                            #     if i in temp:
+                            #         not_empty_frames.append(i)
+                            #     else:
+                            #         empty_frames.append(i)
+                            #
+                            # self.not_empty_frames[_video][i]['not_empty'] = not_empty_frames
+                            # self.not_empty_frames[_video][i]['empty'] = empty_frames
+
                 else:
                     if self.OS and np.max(_mask) > 1.1:
                         continue
@@ -167,24 +196,44 @@ class TIANCHI(data.Dataset):
         N_frames = np.empty((final_clip_size,) + self.shape[video] + (3,), dtype=np.float32)
         N_masks = np.empty((final_clip_size,) + self.shape[video], dtype=np.uint8)
 
-        p1 = int(1 / 3 * frames)
-        p2 = int(2 / 3 * frames)
-        frame_1 = random.randint(0, p1 - 1)
-        frame_2 = random.randint(p1, p2 - 1)
-        frame_3 = random.randint(p2, frames - 1)
-        info['interval'] = [frame_2 - frame_1, frame_3 - frame_2]
+        # not_empty_frames = self.not_empty_frames[video_true_name][object_label]['not_empty']
+        # empty_frames = self.not_empty_frames[video_true_name][object_label]['empty']
+        #
+        # if len(not_empty_frames) >= final_clip_size:
+        #     frames_num = random.sample(not_empty_frames, final_clip_size)
+        # else:
+        #     frames_num = not_empty_frames + random.sample(empty_frames, final_clip_size - len(not_empty_frames))
+        # frames_num.sort()
+        if self.phase == 'train':
+            # p1 = int(1 / 3 * frames)
+            # p2 = int(2 / 3 * frames)
+            p = [int(x / final_clip_size * frames) for x in range(1, final_clip_size)]
+            p.insert(0, 0)
+            p.append(frames - 1)
+            frames_num = []
+            for i in range(final_clip_size):
+                frames_num.append(random.randint(p[i], p[i+1]))
+            # frame_1 = random.randint(0, p1 - 1)
+            # # frame_1 = 0
+            # frame_2 = random.randint(p1, p2 - 1)
+            # frame_3 = random.randint(p2, frames - 1)
+            # info['interval'] = [frame_2 - frame_1, frame_3 - frame_2]
 
-        frames_num = [frame_1, frame_2, frame_3]
+            # frames_num = [frame_1, frame_2, frame_3]
 
         for f in range(final_clip_size):
             img_file = os.path.join(self.image_dir, video_true_name, self.frame_list[video][frames_num[f]])
             N_frames[f] = np.array(
-                Image.open(img_file).convert('RGB').resize(self.target_size, Image.ANTIALIAS)) / 255.
+                Image.open(img_file).convert('RGB').resize(self.target_size, Image.BILINEAR)) / 255.
 
             mask_file = os.path.join(self.mask_dir, video_true_name, self.mask_list[video][frames_num[f]])
-            temp = np.array(Image.open(mask_file).convert('P').resize(self.target_size, Image.NEAREST), dtype=np.uint8)
-            if np.unique(temp).any() not in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
-                print(np.unique(temp))
+            temp = np.array(Image.open(mask_file).convert('P').resize(self.target_size, Image.BILINEAR), dtype=np.uint8)
+
+            if f == 0 and not np.any(temp):
+                print(video_true_name, object_label)
+
+            # if np.unique(temp).any() not in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
+            #     print(np.unique(temp))
             temp_mask = np.zeros(temp.shape)
             if self.SI:
                 temp_mask[temp == object_label] = 1
@@ -192,19 +241,19 @@ class TIANCHI(data.Dataset):
                 temp_mask[temp > 0] = 1
             N_masks[f] = (temp_mask != 0).astype(np.uint8)
 
-        need_au = self.phase == 'train' and (np.random.rand() >= 0.3)
-        if need_au:
-            seed = np.random.randint(99999)
-            # print('seed:',seed)
-            input_frames = (N_frames * 255).astype(np.uint8)
-            for t in range(len(N_frames)):
-                img_au, mask_au = self.aug(image=input_frames[t, np.newaxis, :, :, :].astype(np.uint8),
-                                           mask=N_masks[t, np.newaxis, :, :, np.newaxis], seed=seed)
-                N_frames[t] = img_au[0] / 255.
-                N_masks[t] = mask_au[0, :, :, 0]
+        # need_au = self.phase == 'train' and (np.random.rand() >= 0.3)
+        # if need_au:
+        #     seed = np.random.randint(99999)
+        #     # print('seed:',seed)
+        #     input_frames = (N_frames * 255).astype(np.uint8)
+        #     for t in range(len(N_frames)):
+        #         img_au, mask_au = self.aug(image=input_frames[t, np.newaxis, :, :, :].astype(np.uint8),
+        #                                    mask=N_masks[t, np.newaxis, :, :, np.newaxis], seed=seed)
+        #         N_frames[t] = img_au[0] / 255.
+        #         N_masks[t] = mask_au[0, :, :, 0]
 
         Fs = torch.from_numpy(N_frames).permute(3, 0, 1, 2).float()
-        Ms = torch.from_numpy(N_masks[:, :, :, np.newaxis]).permute(3, 0, 1, 2).long()
+        Ms = torch.from_numpy(N_masks[np.newaxis, :, :, :]).long()
 
         sample = {
             'Fs': Fs, 'Ms': Ms, 'info': info

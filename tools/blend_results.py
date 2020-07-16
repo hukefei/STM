@@ -3,8 +3,8 @@ import cv2
 from PIL import Image
 import numpy as np
 
-save_dir = '/data/sdv2/project_hkf/STM_test/test/2007131532/merge/'
-out_dir = '/data/sdv2/project_hkf/STM_test/test/2007131532/tianchi/'
+save_dir = '/data/sdv2/project_hkf/STM_test/inference/test/2007160943/merge/'
+out_dir = '/data/sdv2/project_hkf/STM_test/inference/test/2007160943/tianchi/'
 
 
 root = '/data/sdv2/workspace/tianchi/dataset/tianchiyusai'

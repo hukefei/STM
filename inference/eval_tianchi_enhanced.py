@@ -24,7 +24,7 @@ import datetime
 
 ### My libs
 from dataset import TIANCHI
-from models.model_enhanced import STM
+from models.model_enhanced_aspp import STM
 from train.train_STM_enhanced import Run_video
 
 torch.set_grad_enabled(False)  # Volatile

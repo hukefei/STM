@@ -132,7 +132,7 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         self.ASPP = ASPP(1024, mdim)
         # self.convFM = nn.Conv2d(1024, mdim, kernel_size=(3, 3), padding=(1, 1), stride=1)
-        self.ResMM = ResBlock(mdim, mdim)
+        # self.ResMM = ResBlock(mdim, mdim)
         self.RF3 = Refine(512, mdim)  # 1/8 -> 1/4
         self.RF2 = Refine(256, mdim)  # 1/4 -> 1
 
@@ -140,7 +140,8 @@ class Decoder(nn.Module):
 
     def forward(self, r4, r3, r2):
         # m4 = self.ResMM(self.convFM(r4))
-        m4 = self.ResMM(self.ASPP(r4))
+        # m4 = self.ResMM(self.ASPP(r4))
+        m4 = self.ASPP(r4)
         m3 = self.RF3(r3, m4)  # out: 1/8, 256
         m2 = self.RF2(r2, m3)  # out: 1/4, 256
 
